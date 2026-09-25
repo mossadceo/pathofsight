@@ -1,0 +1,64 @@
+# Build outputs and local SDK/tools
+.tools/
+**/bin/
+**/obj/
+dist/
+artifacts/
+TestResults/
+coverage/
+*.nupkg
+*.snupkg
+
+# IDE and OS files
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+*.sln.docstates
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Credentials and local runtime data
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.pfx
+*.p12
+*.log
+*.log.*
+*.dmp
+*.dump
+server-url.txt
+settings.json
+
+# AI assistant configuration, history and scratch files
+.codex/
+.claude/
+.cursor/
+.ai/
+.continue/
+.cline/
+.roo/
+.aider*
+AGENTS.md
+AGENTS.local.md
+CLAUDE.md
+CLAUDE.local.md
+GEMINI.md
+.cursorrules
+.cursorignore
+.github/copilot-instructions.md
+.github/instructions/
+.github/prompts/
+.github/agents/
+
+# Local design references and unused artwork
+/omp.png
+/eye.txt
+/DESIGN.md
+/src/pathofsight/Art/big.txt
+/src/pathofsight/Art/medium.txt

@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="vendor/POE2Radar.Core/POE2Radar.Core.csproj" />
+  <Project Path="src/pathofsight/pathofsight.csproj" />
+  <Project Path="tests/pathofsight.Tests/pathofsight.Tests.csproj" />
+</Solution>
