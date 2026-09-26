@@ -18,6 +18,7 @@ public sealed class MapService : IDisposable
     private readonly PoiTracker _tracker = new();
     private PathPlanner _planner = new();
     private string? _selected;
+    private string? _manualSelected;
     private Point[] _route = [];
     private string _routeStatus = "";
     private long _lastPlan;
@@ -48,24 +49,36 @@ public sealed class MapService : IDisposable
     private void Publish(MapSnapshot snapshot) => Volatile.Write(ref _snapshot, snapshot);
     private void Clear(string status, string message)
     {
-        _tracker.Reset("", []); _selected = null; _route = []; _routeStatus = "";
+        _tracker.Reset("", []); _selected = null; _manualSelected = null; _route = []; _routeStatus = "";
         while (_selections.TryDequeue(out _)) { }
         Publish(MapSnapshot.Empty(status, message));
     }
     private void Reset(string key, IEnumerable<Poi> landmarks)
     {
-        _tracker.Reset(key, landmarks); _planner = new(); _selected = null; _route = []; _lastPlan = 0; _routeStatus = "";
+        _tracker.Reset(key, landmarks); _planner = new(); _selected = null; _manualSelected = null; _route = []; _lastPlan = 0; _routeStatus = "";
     }
-    private void Route(string key, Poe2Live.TerrainData terrain, Point player, Poi[] points)
+    internal static Poi? AutomaticBossTarget(string areaCode, Poi[] points) =>
+        areaCode.StartsWith("Map", StringComparison.OrdinalIgnoreCase)
+            ? points.Where(p => p.Kind == "boss")
+                .OrderBy(p => p.Source == "entity" ? 0 : p.Id.StartsWith("marker:boss:", StringComparison.Ordinal) ? 1 : 2)
+                .FirstOrDefault()
+            : null;
+    internal static int RouteSearchBudget(string areaCode, Poi target, Poe2Live.TerrainData terrain) =>
+        target.Kind == "boss" && areaCode.StartsWith("Map", StringComparison.OrdinalIgnoreCase)
+            ? Math.Max(1_000_000, terrain.Walkable.Length * 2) : 250_000;
+    private void Route(string key, string areaCode, Poe2Live.TerrainData terrain, Point player, Poi[] points)
     {
-        var changed = false;
         while (_selections.TryDequeue(out var command))
-            if (command.Instance == key) { _selected = command.Id; changed = true; }
-        var target = points.FirstOrDefault(p => p.Id == _selected);
+            if (command.Instance == key) _manualSelected = command.Id;
+        var target = points.FirstOrDefault(p => p.Id == _manualSelected);
+        if (target is null) { _manualSelected = null; target = AutomaticBossTarget(areaCode, points); }
+        var changed = _selected != target?.Id;
+        _selected = target?.Id;
         if (target is null) { _selected = null; _route = []; _routeStatus = ""; return; }
-        if (!changed && Environment.TickCount64 - _lastPlan < 1000) return;
+        if (!changed && Environment.TickCount64 - _lastPlan < (_route.Length == 0 ? 3000 : 1000)) return;
         _lastPlan = Environment.TickCount64;
-        _route = _planner.Plan(terrain, ((int)player.X, (int)player.Y), ((int)target.Position.X, (int)target.Position.Y), 250000)
+        _route = _planner.Plan(terrain, ((int)player.X, (int)player.Y), ((int)target.Position.X, (int)target.Position.Y),
+                RouteSearchBudget(areaCode, target, terrain))
             .Select(p => new Point(p.x, p.y)).ToArray();
         _routeStatus = _route.Length == 0 ? "Путь не найден" : target.Source == "tile" ? "Маршрут к ориентиру (приблизительно)" : "Маршрут к объекту";
     }
@@ -116,6 +129,8 @@ public sealed class MapService : IDisposable
         Poe2Live.TerrainData? terrain = null;
         TerrainPicture? picture = null;
         string instance = "";
+        Poi[] bossHints = [];
+        long nextBossScan = 0;
         var session = Guid.NewGuid().ToString("N")[..8];
         var unresolvedSince = Environment.TickCount64;
         while (!_demo && !_stop.IsCancellationRequested && !lifetime.HasExited)
@@ -157,9 +172,22 @@ public sealed class MapService : IDisposable
                 Reset(key, landmarks);
                 picture = TerrainPicture.Create(terrain);
                 instance = key;
+                bossHints = [];
+                nextBossScan = 0;
+            }
+            if (live.AreaCode(area).StartsWith("Map", StringComparison.OrdinalIgnoreCase)
+                && bossHints.Length == 0 && Environment.TickCount64 >= nextBossScan)
+            {
+                bossHints = live.BossSpawnMarkers(area).Select(m => new Poi($"marker:boss:{m.Id}",
+                    live.AreaCode(area) + ":boss-spawn", "Место появления босса", "boss",
+                    new(m.Grid.X, m.Grid.Y), "tile")).Where(p => p.Position.In(terrain)).ToArray();
+                nextBossScan = Environment.TickCount64 + 2000;
             }
             var points = _tracker.Update(live.Entities(area, pointsOfInterestOnly: true).Select(PoiTracker.FromEntity)
                 .OfType<Poi>().Where(p => p.Position.In(terrain)).Select(p => p with { Key = live.AreaCode(area) + ":" + p.Key }));
+            if (bossHints.Length > 0)
+                points = points.Where(p => p.Source != "tile" || !Poe2Live.IsMapBossArenaTile(live.AreaCode(area), p.Key))
+                    .Concat(bossHints).ToArray();
             var grid = live.PlayerGrid(playerAddress);
             var position = grid is { } g ? new Point(g.X, g.Y) : null;
             if (position is null || !position.In(terrain))
@@ -168,7 +196,7 @@ public sealed class MapService : IDisposable
                 instance = ""; terrain = null;
                 await Task.Delay(1000, _stop.Token); continue;
             }
-            Route(key, terrain, position, points);
+            Route(key, live.AreaCode(area), terrain, position, points);
             var map = live.ReadMap(igs, area);
             if (!float.IsFinite(map.Zoom) || map.Zoom is <= .05f or >= 8f
                 || !float.IsFinite(map.ShiftX) || !float.IsFinite(map.ShiftY)) map = default;
@@ -218,7 +246,7 @@ public sealed class MapService : IDisposable
             var observed = fixture.Objects;
             if (_demoDiscover != discovery && !seen) { seen = true; observed = fixture.Objects.Concat(fixture.Discovered).ToArray(); }
             var points = _tracker.Update(observed);
-            Route(key, fixture.Terrain, fixture.Player, points);
+            Route(key, "", fixture.Terrain, fixture.Player, points);
             Publish(new("demo", "DEMO · simulated map, not game data", Environment.TickCount64,
                 key, "Training area", fixture.Player, points, _route, _selected, _routeStatus,
                 fixture.Terrain.Width, fixture.Terrain.Height, Terrain: fixture.Terrain, Picture: picture));

@@ -391,8 +391,19 @@ public sealed class Poe2Live
             var g = new System.Numerics.Vector2(wv.X / Poe2.WorldToGridRatio, wv.Y / Poe2.WorldToGridRatio);
 
             var cat = Categorize(entity);
-            if (pointsOfInterestOnly && cat is EntityCategory.Monster or EntityCategory.Player or EntityCategory.Npc)
+            if (pointsOfInterestOnly && cat is EntityCategory.Player or EntityCategory.Npc)
                 continue;
+            if (pointsOfInterestOnly && cat == EntityCategory.Monster)
+            {
+                var bossRarity = ReadRarity(entity);
+                if (bossRarity != Rarity.Unique) continue;
+                var (cur, max) = ReadHp(entity);
+                var reaction = ReadReaction(entity);
+                if (!IsVisibleBoss(bossRarity, cur, max, reaction)) continue;
+                dots.Add(new EntityDot(id, entity, g, wv, cat, _meta.GetValueOrDefault(entity, ""),
+                    cur, max, false, reaction, bossRarity, false));
+                continue;
+            }
             if (pointsOfInterestOnly)
             {
                 var poiMeta = _meta.GetValueOrDefault(entity, "");
@@ -424,6 +435,40 @@ public sealed class Poe2Live
                 poi, ReadReaction(entity), rarity, opened, iconComplete, mods, itemArt, itemIdentified, itemName));
         }
         return dots;
+    }
+
+    public static bool IsVisibleBoss(Rarity rarity, int hpCur, int hpMax, byte reaction)
+        => rarity == Rarity.Unique && (hpMax <= 0 || hpCur > 0) && (reaction & 0x7F) != 1;
+
+    public static bool IsBossSpawnMarker(string metadata) =>
+        metadata.EndsWith("/BossLeagueContentMarkerMain", StringComparison.OrdinalIgnoreCase) ||
+        metadata.EndsWith("/BossRoomMinimapIcon", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Boss spawn hints exist in the sleeping map before combat and can have visual-range ids.</summary>
+    public List<(uint Id, System.Numerics.Vector2 Grid)> BossSpawnMarkers(nint areaInstance)
+    {
+        var result = new List<(uint, System.Numerics.Vector2)>();
+        var head = Ptr(areaInstance + Poe2.AreaInstance.SleepingEntities);
+        _reader.TryReadStruct<int>(areaInstance + Poe2.AreaInstance.SleepingEntities + 8, out var size);
+        if (head == 0 || size <= 0 || size > 100000) return result;
+        _entQueue.Clear(); _entQueue.Enqueue(Ptr(head + Poe2.StdMapNode.Parent));
+        _entVisited.Clear();
+        while (_entQueue.Count > 0 && _entVisited.Count < 200000)
+        {
+            var node = _entQueue.Dequeue();
+            if (node == 0 || node == head || !_entVisited.Add(node)) continue;
+            if (_reader.TryReadBytes(node, _nodeBuf) < _nodeBuf.Length || _nodeBuf[Poe2.StdMapNode.IsNil] != 0) continue;
+            _entQueue.Enqueue((nint)BitConverter.ToInt64(_nodeBuf, Poe2.StdMapNode.Left));
+            _entQueue.Enqueue((nint)BitConverter.ToInt64(_nodeBuf, Poe2.StdMapNode.Right));
+            var entity = (nint)BitConverter.ToInt64(_nodeBuf, Poe2.StdMapNode.ValueEntityPtr);
+            if (entity == 0 || !IsBossSpawnMarker(ReadMetadata(entity))) continue;
+            var positioned = ResolveComponent(entity, "Positioned");
+            if (positioned == 0 || !_reader.TryReadStruct<Vector3>(positioned + Poe2.Positioned.WorldPosition, out var world)
+                || !float.IsFinite(world.X) || !float.IsFinite(world.Y) || world.X <= 0 || world.Y <= 0) continue;
+            result.Add((BitConverter.ToUInt32(_nodeBuf, Poe2.StdMapNode.KeyId),
+                new(world.X / Poe2.WorldToGridRatio, world.Y / Poe2.WorldToGridRatio)));
+        }
+        return result;
     }
 
     /// <summary>Drop every frozen per-entity cache entry for an address whose occupant has changed
@@ -818,7 +863,8 @@ public sealed class Poe2Live
                 // sweep was removed — it surfaced decorative terrain (e.g. every "...Vault_Door..." tile)
                 // as noise; users now opt into any tile via Tile rules + the dashboard picker.
                 var keep = Curated(areaCode, p) != null
-                           || CustomLandmarkMatch?.Invoke(p) != null;
+                           || CustomLandmarkMatch?.Invoke(p) != null
+                           || IsMapBossArenaTile(areaCode, p);
                 path = keep ? p : null;
                 pathCache[tgtFile] = path;
             }
@@ -833,7 +879,8 @@ public sealed class Poe2Live
             var name = LandmarkName(path);
             // Curated label wins; else a non-empty user label; else null (derived name shows). Same
             // for every cluster of this path (they're the same feature type in different spots).
-            var curated = Curated(areaCode, path) ?? NonEmpty(CustomLandmarkMatch?.Invoke(path));
+            var curated = Curated(areaCode, path) ?? NonEmpty(CustomLandmarkMatch?.Invoke(path))
+                ?? (IsMapBossArenaTile(areaCode, path) ? "Арена босса" : null);
             foreach (var cluster in ClusterTiles(cells, Math.Clamp(LandmarkClusterGap, 0, 64)))
             {
                 double sx = 0, sy = 0;
@@ -845,6 +892,11 @@ public sealed class Poe2Live
         }
         return result;
     }
+
+    public static bool IsMapBossArenaTile(string areaCode, string path)
+        => areaCode.StartsWith("Map", StringComparison.OrdinalIgnoreCase)
+           && (path.Contains("BossArena", StringComparison.OrdinalIgnoreCase)
+               || path.Contains("BossRoom", StringComparison.OrdinalIgnoreCase));
 
     /// <summary>
     /// Group same-path tile cells into spatially-disjoint clusters: two cells join when within a

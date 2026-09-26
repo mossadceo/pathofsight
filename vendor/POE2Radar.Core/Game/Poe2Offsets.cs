@@ -406,6 +406,7 @@ public static class Poe2
     /// <summary>Positioned component.</summary>
     public static class Positioned
     {
+        public const int WorldPosition = 0x490; // ✓ read-only live: player and sleeping boss marker, 2026-09-26 client
         // ✓ validated live: player (friendly) = 0x01, hostile MastodonBoss = 0x00.
         // GameHelper2 rule: IsFriendly = (Reaction & 0x7F) == 1.
         public const int Reaction = 0x1E0;

@@ -24,6 +24,33 @@ foreach(var slot in slots)
             player=live.PlayerGrid(lp)?.ToString(),entities=entities.Count,landmarks=live.Landmarks(ai).Count}));
         if(t!=null && live.PlayerGrid(lp) is {} p)
         {
+            var bossRouteAt=Array.IndexOf(args,"--boss-route");
+            if(bossRouteAt>=0)
+            {
+                var code=live.AreaCode(ai);
+                var markers=live.BossSpawnMarkers(ai);
+                var marker=markers.FirstOrDefault();
+                var arena=live.Landmarks(ai).FirstOrDefault(l=>Poe2Live.IsMapBossArenaTile(code,l.Path));
+                var hasGoal=marker.Id!=0 || !string.IsNullOrEmpty(arena.Path);
+                var goal=marker.Id!=0 ? marker.Grid : arena.Center;
+                Console.WriteLine(JsonSerializer.Serialize(new{areaCode=code,markerCount=markers.Count,
+                    arenaCount=live.Landmarks(ai).Count(l=>Poe2Live.IsMapBossArenaTile(code,l.Path)),goal=hasGoal?goal.ToString():null}));
+                if(code.StartsWith("Map",StringComparison.OrdinalIgnoreCase) && hasGoal)
+                {
+                    var routePlanner=new PathPlanner();
+                    foreach(var budget in new[]{250_000,1_000_000,4_000_000})
+                    {
+                        var watch=System.Diagnostics.Stopwatch.StartNew();
+                        var route=routePlanner.Plan(t,((int)p.X,(int)p.Y),((int)goal.X,(int)goal.Y),budget);
+                        Console.WriteLine(JsonSerializer.Serialize(new{budget,routePoints=route.Count,ms=watch.ElapsedMilliseconds}));
+                        if(route.Count>0)break;
+                    }
+                    if(bossRouteAt+1<args.Length)
+                        File.WriteAllText(args[bossRouteAt+1],JsonSerializer.Serialize(new{width=t.Width,height=t.Height,
+                            cells=Convert.ToBase64String(t.Walkable),player=new{x=p.X,y=p.Y},boss=new{x=goal.X,y=goal.Y}}));
+                }
+                continue;
+            }
             var fixtureAt=Array.IndexOf(args,"--fixture");
             var checkpoint=entities.FirstOrDefault(e=>e.Metadata.Contains("/Checkpoint"));
             if(fixtureAt>=0 && fixtureAt+1<args.Length && checkpoint.Metadata!=null && t.Width>=128 && t.Height>=128)

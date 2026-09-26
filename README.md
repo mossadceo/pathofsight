@@ -4,6 +4,10 @@ Path Of Sight is a Windows tool for exploring Path of Exile 2 areas. It displays
 
 The map includes area transitions, waypoints, checkpoints, quest locations, bosses, and other landmarks when the game client exposes them. It also offers filters, labels, and display settings.
 
+In waystone maps, a preloaded boss spawn marker appears before the boss entity is active when the client exposes one. It replaces the approximate `BossArena`/`BossRoom` terrain marker. A hostile unique boss appears as a separate moving marker once the client creates its entity; the marker disappears on confirmed death or when the entity leaves the loaded list. Where the client exposes neither a spawn marker nor a recognizable arena tile, the boss can appear only after it spawns.
+
+When a waystone map exposes a boss target, the route to it starts automatically and updates as the character moves. Long boss routes search across the full map grid instead of stopping after a short fixed search. A manually selected destination takes priority until you reset the selection; then the boss route resumes. Campaign bosses never start an automatic route. If the terrain data has no walkable connection to the target, the app reports that no path was found and retries as the character moves.
+
 ## Download
 
 Download `pathofsight-win-x64.zip` from the [latest release](https://github.com/mossadceo/pathofsight/releases/latest), extract it, and run `pathofsight.exe`. The Windows x64 package includes the .NET runtime.

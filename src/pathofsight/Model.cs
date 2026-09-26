@@ -103,8 +103,11 @@ public sealed class PoiTracker
     public Poi[] Update(IEnumerable<Poi> observed)
     {
         foreach (var id in _objects.Keys.ToArray()) _objects[id] = _objects[id] with { Remembered = true };
-        foreach (var p in observed) _objects[p.Id] = p with { Remembered = false };
-        var result = _objects.Values.ToList();
+        var bosses = new List<Poi>();
+        foreach (var p in observed)
+            if (p.Source == "entity" && p.Kind == "boss") bosses.Add(p);
+            else _objects[p.Id] = p with { Remembered = false };
+        var result = _objects.Values.Concat(bosses).ToList();
         var used = new HashSet<string>();
         foreach (var tile in _landmarks)
         {
@@ -140,8 +143,14 @@ public sealed class PoiTracker
     }
     public static Poi? FromEntity(Poe2Live.EntityDot e)
     {
+        if (e.Category == Poe2Live.EntityCategory.Monster)
+        {
+            if (!Poe2Live.IsVisibleBoss(e.Rarity, e.HpCur, e.HpMax, e.Reaction)) return null;
+            return new($"entity:{e.Id}", e.Metadata, EntityNameResolver.Shared.ResolveOrShorten(e.Metadata), "boss",
+                new(e.Grid.X, e.Grid.Y), "entity");
+        }
         // Moving entities must not be remembered as permanent map objectives.
-        if (e.Category is Poe2Live.EntityCategory.Monster or Poe2Live.EntityCategory.Player or Poe2Live.EntityCategory.Npc) return null;
+        if (e.Category is Poe2Live.EntityCategory.Player or Poe2Live.EntityCategory.Npc) return null;
         var name = EntityNameResolver.Shared.ResolveOrShorten(e.Metadata);
         var abyss = e.Metadata.Contains("Abyss", StringComparison.OrdinalIgnoreCase) || name.Contains("Abyss", StringComparison.OrdinalIgnoreCase);
         if (abyss && (e.Metadata.Contains("Crack", StringComparison.OrdinalIgnoreCase)

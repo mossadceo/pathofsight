@@ -87,6 +87,41 @@ Check(PoiTracker.FromEntity(AbyssDot("Metadata/MiscellaneousObjects/Abyss/AbyssC
 Check(PoiTracker.FromEntity(AbyssDot("Metadata/MiscellaneousObjects/Abyss/AbyssFissure_01"))==null,"abyss fissures are not POIs");
 Check(PoiTracker.FromEntity(AbyssDot("Metadata/MiscellaneousObjects/Abyss/AbyssJumpInteractable"))!=null,"abyss entrance remains a POI");
 Check(PoiTracker.FromEntity(AbyssDot("Metadata/MiscellaneousObjects/Other/CrystalFissure"))!=null,"unrelated fissures remain POIs");
+var boss=new Poe2Live.EntityDot(91,0,new(32,40),default,Poe2Live.EntityCategory.Monster,
+    "Metadata/Monsters/SomeBoss/SomeBossMap",100,100,false,0,Poe2Live.Rarity.Unique,false);
+var bossPoi=PoiTracker.FromEntity(boss);
+Check(bossPoi is { Kind: "boss", Source: "entity" },"living unique boss becomes a map target");
+tracker.Reset("boss",[]);
+Check(tracker.Update([bossPoi!]).Length==1 && tracker.Update([]).Length==0,"boss marker disappears when boss is no longer observed");
+Check(PoiTracker.FromEntity(boss with { HpCur=0 })==null,"dead boss is hidden");
+Check(PoiTracker.FromEntity(boss with { HpCur=0, HpMax=0 })!=null,"boss remains visible when health read is unavailable");
+Check(PoiTracker.FromEntity(boss with { Rarity=Poe2Live.Rarity.Rare })==null,"rare monster is not marked as boss");
+Check(PoiTracker.FromEntity(boss with { Reaction=1 })==null,"friendly unique is not marked as boss");
+var bossRouteTargets=new Poi[]
+{
+    new("tile:arena","MapExcavation:BossArena","Арена босса","boss",new(30,40),"tile"),
+    new("marker:boss:7","MapExcavation:boss-spawn","Место появления босса","boss",new(32,40),"tile"),
+    bossPoi!,
+    new("tile:exit","MapExcavation:Exit","Выход","transition",new(10,10),"tile")
+};
+Check(MapService.AutomaticBossTarget("MapExcavation",bossRouteTargets)?.Id==bossPoi!.Id,
+    "waystone route follows a visible boss");
+Check(MapService.AutomaticBossTarget("MapExcavation",bossRouteTargets[..2])?.Id=="marker:boss:7",
+    "waystone route uses the early spawn marker before the boss appears");
+Check(MapService.AutomaticBossTarget("MapExcavation",bossRouteTargets[..1])?.Id=="tile:arena",
+    "waystone route falls back to an arena landmark");
+Check(MapService.AutomaticBossTarget("G1_1",bossRouteTargets)==null
+    && MapService.AutomaticBossTarget("",bossRouteTargets)==null,
+    "campaign and demo bosses never get an automatic route");
+Check(Poe2Live.IsMapBossArenaTile("MapExcavation","Metadata/Terrain/Islands/Tiles/TwilightIsland/PrecursorRuins/Arena/BossArena_Forge_PCR_01.tdt"),
+    "waystone boss arena tile is available before boss spawns");
+Check(!Poe2Live.IsMapBossArenaTile("G1_1","Metadata/Terrain/Maps/Some/BossArena.tdt")
+    && !Poe2Live.IsMapBossArenaTile("MapExcavation","Metadata/Terrain/Maps/Some/BossStairs.tdt"),
+    "generic arena detection excludes campaign and boss stairs");
+Check(Poe2Live.IsBossSpawnMarker("Metadata/MiscellaneousObjects/BossLeagueContentMarkerMain")
+    && Poe2Live.IsBossSpawnMarker("Metadata/Monsters/Hags/Objects/BossRoomMinimapIcon")
+    && !Poe2Live.IsBossSpawnMarker("Metadata/MiscellaneousObjects/BossArenaBlocker"),
+    "early boss marker names exclude arena blockers");
 var transition=PoiTracker.FromEntity(new(89,0,new(10,10),default,Poe2Live.EntityCategory.Transition,
     "Metadata/MiscellaneousObjects/AreaTransition_Animate",0,0,true,0,default,false));
 Check(transition?.Name=="Area Transition","unresolved transition metadata uses a generic name for landmark refinement");
@@ -100,6 +135,18 @@ var projected=Projection.At(new(33,42),new(23,42),new(800,450),2);Check(projecte
 var planner=new PathPlanner();var path=planner.Plan(fixture.Terrain,(40,90),(209,40));
 Check(path.Count>1,"route traverses connected rooms");
 Check(planner.Plan(fixture.Terrain,(40,90),(210,133)).Count==0,"disconnected room returns no path");
+const int longWidth=800,longHeight=800;
+var longCells=new byte[longWidth*longHeight];Array.Fill(longCells,(byte)1);
+for(var y=0;y<longHeight-10;y++)longCells[y*longWidth+400]=0;
+var longTerrain=new Poe2Live.TerrainData(longCells,longWidth,longHeight);
+Check(new PathPlanner().Plan(longTerrain,(600,100),(700,100),250000).Count>1,
+    "near boss route succeeds on the same large map");
+var syntheticBoss=new Poi("marker:boss:1","MapExample:boss-spawn","Босс","boss",new(700,100),"tile");
+Check(MapService.RouteSearchBudget("G1_1",syntheticBoss,longTerrain)==250000,
+    "campaign boss keeps the ordinary search budget");
+Check(new PathPlanner().Plan(longTerrain,(100,100),(700,100),
+    MapService.RouteSearchBudget("MapExample",syntheticBoss,longTerrain)).Count>1,
+    "route from map entrance survives a long detour before the boss");
 var corner=new Poe2Live.TerrainData([1,0,0,1],2,2);
 Check(new PathPlanner().Plan(corner,(0,0),(1,1)).Count==0,"route cannot cut a diagonal wall corner");
 Check(!PathSmoother.HasLineOfSight(new TerrainCellReader(corner),0,0,1,1),"smoother cannot cut a diagonal wall corner");
