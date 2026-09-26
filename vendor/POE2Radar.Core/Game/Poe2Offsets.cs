@@ -542,7 +542,7 @@ public static class Poe2
     /// 2026-06-29 (Research <c>--exchange-panel3</c>): Exalted-want/Chaos-have @ 50:1 → offered[0] Get=50 Give=1.
     /// The panel is resolved STRUCTURALLY (scan GameUi's visible children for one with valid stock vectors at
     /// both offsets) rather than by index — self-healing across patches. Stock vectors update their begin/end
-    /// in place as orders fill, so read them LIVE. See <see cref="Poe2CurrencyExchange"/>.</summary>
+    /// in place as orders fill, so read them LIVE.</summary>
     public static class CurrencyExchange
     {
         public const int WantedStockVec  = 0x478; // ✓ StdVector<StockEntry> — the "I Want" side

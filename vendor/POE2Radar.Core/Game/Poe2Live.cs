@@ -459,8 +459,7 @@ public sealed class Poe2Live
     /// <summary>The live state of a runeshape-monolith device (the persistent Expedition2Encounter POI
     /// entity), read off the device → StateMachine → RuneStation chain (see <see cref="Poe2.RuneStation"/>).
     /// <paramref name="Resolved"/> false means the station chain didn't resolve (e.g. transient read, or the
-    /// device isn't a monolith). Feeds <see cref="RuneMonolithCatalog.Offers"/> to compute the rewards the
-    /// monolith will offer WITHOUT opening its panel. Persists out of the network bubble → readable
+    /// device isn't a monolith). Persists out of the network bubble → readable
     /// area-wide. <paramref name="Collected"/> = the MinimapIcon completed flag (reward already claimed).</summary>
     public readonly record struct MonolithState(
         bool Resolved, int HoleCount, int AnchorIdx, int AnchorPos, bool IsUnique, bool Collected);
@@ -1023,11 +1022,10 @@ public sealed class Poe2Live
         return (flags & (1u << Poe2.UiElement.FlagVisibleBit)) != 0;
     }
 
-    // ── UiElement screen geometry (GameHelper UiElementBase port; shared with Poe2Runeforge) ──────────
+    // ── UiElement screen geometry (GameHelper UiElementBase port) ──────────
 
     /// <summary>Screen-space rect (pixels) of ANY UiElement, via the GameHelper UiElementBase math:
-    /// parent-chain unscaled position × resolution scale. Same geometry as <see cref="Poe2Runeforge"/>
-    /// (sans its scroll viewport). <paramref name="winW"/>/<paramref name="winH"/> are the current game
+    /// parent-chain unscaled position × resolution scale. <paramref name="winW"/>/<paramref name="winH"/> are the current game
     /// window size. Returns false on a read failure, a degenerate (≤1 px) rect, or when the element's own
     /// visibility bit is clear (so a render-thread caller can read live tag rects and a stale/closed tag
     /// just drops out). Touches no per-entity cache → safe to call from a separate reader stack per frame.</summary>
@@ -1078,7 +1076,7 @@ public sealed class Poe2Live
     }
 
     /// <summary>v1 = winW/2560, v2 = winH/1600; ScaleIndex picks which axis scale(s) apply (1→(v1,v1),
-    /// 2→(v2,v2), 3→(v1,v2), else uniform mul). Mirrors GameHelper's ScaleValue / Poe2Runeforge.</summary>
+    /// 2→(v2,v2), 3→(v1,v2), else uniform mul). Mirrors GameHelper's ScaleValue.</summary>
     private static (float w, float h) UiScaleValue(byte idx, float mul, float winW, float winH)
     {
         if (mul == 0f) mul = 1f;
@@ -1096,9 +1094,8 @@ public sealed class Poe2Live
 
     /// <summary>Parent-chain accumulated UNSCALED position: relPos + parent position, plus this element's
     /// PositionModifier when its flag <c>0x0A</c> is set. SIMPLE add (no cross-scale rescale) — this is the
-    /// form validated for loot tags by Research <c>--lootcursor</c>. (The runeforge panel's
-    /// <see cref="Poe2Runeforge"/> keeps a rescale branch, but its rows share their parents' scale so it
-    /// never fires; loot tags DO cross scale indices, where the rescale mis-positioned them.)</summary>
+    /// form validated for loot tags by Research <c>--lootcursor</c>. Loot tags cross scale indices,
+    /// where rescaling mis-positioned them.</summary>
     private (float x, float y) UiUnscaledPos(nint el, int depth, float winW, float winH)
     {
         // RelativePos as ONE atomic 8-byte read (X,Y contiguous). Splitting it into two float reads tears
@@ -1339,8 +1336,7 @@ public sealed class Poe2Live
     }
 
     /// <summary>Resolve the world-anchored ground-label container (the <c>ItemsOnGroundLabelElement</c>) by a
-    /// FLAGS-FINGERPRINT walk with backtracking from GameUi (<c>InGameState+0x300</c>), mirroring
-    /// <see cref="Poe2Runeforge"/>'s panel resolution — child indices drift per patch, the Flags "role" bits
+    /// FLAGS-FINGERPRINT walk with backtracking from GameUi (<c>InGameState+0x300</c>) — child indices drift per patch, the Flags "role" bits
     /// don't, so each hop matches <c>(flags &amp; ~visibleBit) == fingerprint</c> and keeps whichever branch
     /// bottoms out at the labels container. The container persists per area but its children populate/empty
     /// as items drop/are looted, so a fresh walk every (throttled) scan self-heals. Returns 0 when the path
