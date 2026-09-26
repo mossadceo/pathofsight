@@ -1,6 +1,10 @@
 # Path Of Sight
 
-Path Of Sight is a Windows tool for exploring Path of Exile 2 areas. It displays terrain, nearby points of interest, and routes in a local browser map, with an optional overlay on the game's Tab map.
+> [!WARNING]
+> **MAP REVEAL / РАСКРЫТИЕ КАРТЫ — ВОЗМОЖНА БЛОКИРОВКА АККАУНТА PATH OF EXILE 2.**
+> This tool reads the game process and reveals map information before you discover it in game. Using it may lead to account suspension or a permanent ban. **Use it at your own risk.** [GGG does not guarantee that third-party tools are allowed.](https://www.pathofexile.com/forum/view-thread/3637217)
+
+Path Of Sight is a Path of Exile 2 map reveal tool for Windows. It displays unrevealed terrain, points of interest, and routes in a local browser map, with an optional overlay on the game's Tab map.
 
 The map includes area transitions, waypoints, checkpoints, quest locations, bosses, and other landmarks when the game client exposes them. It also offers filters, labels, and display settings.
 
