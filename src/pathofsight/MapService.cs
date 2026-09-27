@@ -221,7 +221,7 @@ public sealed class MapService : IDisposable
                 sleepingEntities = live.SleepingRadarEntities(area);
                 nextSleepingScan = Environment.TickCount64 + 2000;
             }
-            var awake = live.Entities(area, pointsOfInterestOnly: true);
+            var awake = live.Entities(area);
             var awakeIds = awake.Select(e => e.Id).ToHashSet();
             sleepingEntities.RemoveAll(e => awakeIds.Contains(e.Id));
             var points = _tracker.Update(awake.Concat(sleepingEntities).Select(PoiTracker.FromEntity)

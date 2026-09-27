@@ -578,7 +578,7 @@ public static class Poe2
     /// <summary>Ritual tribute-shop reward grid. The reward TILES are item-slot UiElements (same "ItemFrame"
     /// element type as the flask bar): each holds its reward item Entity at <see cref="TileSlotItem"/>. The
     /// grid is found by walking up from a shop-signature text element to the ancestor whose child is a
-    /// container of these tiles (see <c>Poe2Live.ReadRitualRewards</c>). Validated live 2026-06-20 (Research
+    /// container of these tiles. Validated live 2026-06-20 (Research
     /// <c>--tooltip-capture</c>): all 5 offered rewards read as full item entities with no hover needed.</summary>
     public static class Ritual
     {

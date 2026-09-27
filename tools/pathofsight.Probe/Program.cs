@@ -19,7 +19,7 @@ foreach(var slot in slots)
     Console.WriteLine(JsonSerializer.Serialize(new{slot=Hex(slot),root=Hex(root),first=Hex(first),last=Hex(last),activeBytes=(long)last-(long)first,strict}));
     if(strict)
     {
-        var t=live.Terrain(ai);var entities=live.Entities(ai,true);
+        var t=live.Terrain(ai);var entities=live.Entities(ai);
         var beforeSleepingReads=reader.ReadCount;
         var sleepingTimer=System.Diagnostics.Stopwatch.StartNew();
         var sleeping=live.SleepingRadarEntities(ai);
