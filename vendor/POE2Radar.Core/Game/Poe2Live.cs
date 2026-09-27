@@ -391,28 +391,29 @@ public sealed class Poe2Live
             var g = new System.Numerics.Vector2(wv.X / Poe2.WorldToGridRatio, wv.Y / Poe2.WorldToGridRatio);
 
             var cat = Categorize(entity);
-            if (pointsOfInterestOnly && cat is EntityCategory.Player or EntityCategory.Npc)
+            if (pointsOfInterestOnly && cat == EntityCategory.Player)
                 continue;
             if (pointsOfInterestOnly && cat == EntityCategory.Monster)
             {
-                var bossRarity = ReadRarity(entity);
-                if (bossRarity != Rarity.Unique) continue;
+                var monsterRarity = ReadRarity(entity);
                 var (cur, max) = ReadHp(entity);
                 var reaction = ReadReaction(entity);
-                if (!IsVisibleBoss(bossRarity, cur, max, reaction)) continue;
+                if (!IsVisibleMonster(monsterRarity, cur, max, reaction)) continue;
                 dots.Add(new EntityDot(id, entity, g, wv, cat, _meta.GetValueOrDefault(entity, ""),
-                    cur, max, false, reaction, bossRarity, false));
+                    cur, max, false, reaction, monsterRarity, false));
                 continue;
             }
             if (pointsOfInterestOnly)
             {
                 var poiMeta = _meta.GetValueOrDefault(entity, "");
                 var (isPoi, completed) = ReadIcon(entity);
-                if (isPoi || cat == EntityCategory.Transition
+                var earlyPoi = IsEarlyPoiMetadata(poiMeta);
+                if (isPoi || earlyPoi || cat is EntityCategory.Transition or EntityCategory.Npc or EntityCategory.Chest
                     || poiMeta.StartsWith("Metadata/Shrines/", StringComparison.OrdinalIgnoreCase)
                     || poiMeta.Contains("Checkpoint", StringComparison.OrdinalIgnoreCase)
                     || poiMeta.Contains("Waypoint", StringComparison.OrdinalIgnoreCase))
-                    dots.Add(new EntityDot(id, entity, g, wv, cat, poiMeta, 0, 0, isPoi, 0, Rarity.NonMonster, false, completed));
+                    dots.Add(new EntityDot(id, entity, g, wv, cat, poiMeta, 0, 0, isPoi || earlyPoi, 0, Rarity.NonMonster,
+                        cat == EntityCategory.Chest && ReadChestOpened(entity), completed));
                 continue; // FullMap never reads loot values, monster mods or item identities.
             }
             int hpCur = 0, hpMax = 0;
@@ -438,7 +439,62 @@ public sealed class Poe2Live
     }
 
     public static bool IsVisibleBoss(Rarity rarity, int hpCur, int hpMax, byte reaction)
-        => rarity == Rarity.Unique && (hpMax <= 0 || hpCur > 0) && (reaction & 0x7F) != 1;
+        => rarity == Rarity.Unique && IsVisibleMonster(rarity, hpCur, hpMax, reaction);
+
+    public static bool IsVisibleMonster(Rarity rarity, int hpCur, int hpMax, byte reaction)
+        => rarity is Rarity.Magic or Rarity.Rare or Rarity.Unique
+            && (hpMax <= 0 || hpCur > 0) && (reaction & 0x7F) != 1;
+
+    public static bool IsEarlyPoiMetadata(string metadata) =>
+        metadata.StartsWith("Metadata/Shrines/", StringComparison.OrdinalIgnoreCase)
+        || metadata.Contains("Checkpoint", StringComparison.OrdinalIgnoreCase)
+        || metadata.Contains("Waypoint", StringComparison.OrdinalIgnoreCase)
+        || metadata.Equals("Metadata/Terrain/Leagues/Ritual/RitualRuneObject", StringComparison.OrdinalIgnoreCase)
+        || metadata.Equals("Metadata/MiscellaneousObjects/Expedition2/Expedition2Encounter", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Visible-rarity monsters and verified POIs already present in the sleeping entity map.
+    /// Sleeping entities do not expose reliable live HP or minimap icons.</summary>
+    public List<EntityDot> SleepingRadarEntities(nint areaInstance)
+    {
+        var result = new List<EntityDot>();
+        var head = Ptr(areaInstance + Poe2.AreaInstance.SleepingEntities);
+        _reader.TryReadStruct<int>(areaInstance + Poe2.AreaInstance.SleepingEntities + 8, out var size);
+        if (head == 0 || size <= 0 || size > 100000) return result;
+        _entQueue.Clear(); _entQueue.Enqueue(Ptr(head + Poe2.StdMapNode.Parent));
+        _entVisited.Clear();
+        while (_entQueue.Count > 0 && _entVisited.Count < 200000)
+        {
+            var node = _entQueue.Dequeue();
+            if (node == 0 || node == head || !_entVisited.Add(node)) continue;
+            if (_reader.TryReadBytes(node, _nodeBuf) < _nodeBuf.Length || _nodeBuf[Poe2.StdMapNode.IsNil] != 0) continue;
+            _entQueue.Enqueue((nint)BitConverter.ToInt64(_nodeBuf, Poe2.StdMapNode.Left));
+            _entQueue.Enqueue((nint)BitConverter.ToInt64(_nodeBuf, Poe2.StdMapNode.Right));
+            var entity = (nint)BitConverter.ToInt64(_nodeBuf, Poe2.StdMapNode.ValueEntityPtr);
+            if (entity == 0) continue;
+            var metadata = ReadMetadata(entity);
+            var earlyPoi = IsEarlyPoiMetadata(metadata);
+            if (!earlyPoi && (!metadata.Contains("/Monsters/", StringComparison.Ordinal)
+                || metadata.Contains("/NPC/", StringComparison.Ordinal) || IsNonCombat(metadata))) continue;
+            var raw = 0;
+            if (!earlyPoi)
+            {
+                var omp = ResolveComponent(entity, "ObjectMagicProperties");
+                if (omp == 0 || !_reader.TryReadStruct<int>(omp + Poe2.ObjectMagicProperties.Rarity, out raw)
+                    || raw is < 1 or > 3) continue;
+            }
+            var positioned = ResolveComponent(entity, "Positioned");
+            if (positioned == 0 || !_reader.TryReadStruct<Vector3>(positioned + Poe2.Positioned.WorldPosition, out var world)
+                || !float.IsFinite(world.X) || !float.IsFinite(world.Y) || world.X <= 0 || world.Y <= 0) continue;
+            var reaction = !earlyPoi && _reader.TryReadStruct<byte>(positioned + Poe2.Positioned.Reaction, out var observedReaction)
+                ? observedReaction : (byte)0;
+            if (!earlyPoi && (reaction & 0x7F) == 1) continue;
+            var grid = new System.Numerics.Vector2(world.X / Poe2.WorldToGridRatio, world.Y / Poe2.WorldToGridRatio);
+            result.Add(new EntityDot(BitConverter.ToUInt32(_nodeBuf, Poe2.StdMapNode.KeyId), entity, grid, world,
+                earlyPoi ? EntityCategory.Object : EntityCategory.Monster, metadata, 0, 0, earlyPoi,
+                reaction, earlyPoi ? Rarity.NonMonster : (Rarity)raw, false));
+        }
+        return result;
+    }
 
     public static bool IsBossSpawnMarker(string metadata) =>
         metadata.EndsWith("/BossLeagueContentMarkerMain", StringComparison.OrdinalIgnoreCase) ||

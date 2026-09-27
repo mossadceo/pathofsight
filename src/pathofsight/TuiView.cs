@@ -4,9 +4,12 @@ using System.Text;
 
 namespace pathofsight;
 
+internal sealed record TuiPanel(string Title, string Profile, string[] Items, int Selected);
+
 internal sealed class TuiView : IDisposable
 {
-    private const string Primary = "210;80;80", Muted = "112;119;130", White = "255;255;255", Status = "220;220;220";
+    internal const string Primary = "210;80;80";
+    private const string Muted = "112;119;130", White = "255;255;255", Status = "180;180;180";
     private const string CommandGray = "180;180;180", Red = "180;65;65", Green = "78;186;101";
     private static readonly string[] Logo = ReadLogo();
     private readonly bool ansi;
@@ -14,6 +17,8 @@ internal sealed class TuiView : IDisposable
     private readonly uint originalMode;
     private int previousWidth;
     private int previousHeight;
+    private string[] _previousRows = [];
+    private long _lastFullPaint;
 
     public TuiView()
     {
@@ -23,76 +28,101 @@ internal sealed class TuiView : IDisposable
         if (ansi) Console.Write("\x1b[?1049h\x1b[?25l\x1b[?7l\x1b[2J");
     }
 
-    public void Draw(MapSnapshot snapshot, string notice, bool connected, int width, int height)
+    public void Draw(MapSnapshot snapshot, string notice, bool connected, int width, int height, TuiMenu? menu = null)
     {
-        var lines = Layout(snapshot, notice, connected, width, height);
+        var lines = menu?.Layout(snapshot, notice, connected, width, height) ?? Layout(snapshot, notice, connected, width, height);
         if (ansi)
         {
             Console.Write(RenderFrame(lines, width, height));
         }
         else
         {
-            if (!Console.IsOutputRedirected) Console.Clear();
-            foreach (var line in lines.Take(Math.Max(1, height - 1))) Console.WriteLine(line.Text);
+            if (Console.IsOutputRedirected)
+                foreach (var line in lines.Take(height)) Console.WriteLine(line.Text);
+            else
+                for (var row = 0; row < Math.Min(lines.Count, height); row++)
+                {
+                    Console.SetCursorPosition(0, row);
+                    Console.Write(lines[row].Text.PadRight(Math.Max(0, width - 1)));
+                }
         }
     }
 
-    internal string RenderFrame(List<(string Text, string Color, bool Bold)> lines, int width, int height)
+    internal string RenderFrame(List<(string Text, string Color, bool Bold)> lines, int width, int height, bool refresh = false)
     {
         var output = new StringBuilder();
-        if (previousWidth != width || previousHeight != height)
-            output.Append("\x1b[2J");
-        // Terminal reflow can invalidate any row, including after a resize round-trip.
-        // Repaint the full frame; disabled autowrap prevents scrolling during resize races.
+        var now = Environment.TickCount64;
+        var fullPaint = refresh || previousWidth != width || previousHeight != height || now - _lastFullPaint >= 2000;
+        if (fullPaint) _lastFullPaint = now;
+        var rows = new string[height];
+        // Overwrite, never erase first. Periodic overwrites repair unobserved resize round-trips.
         for (var row = 0; row < height; row++)
         {
-            output.Append($"\x1b[{row + 1};1H\x1b[0m\x1b[2K");
-            if (row >= lines.Count) continue;
-            var line = lines[row];
-            output.Append($"\x1b[38;2;{line.Color}m");
-            if (line.Bold) output.Append("\x1b[1m");
+            var line = row < lines.Count ? lines[row] : (Text: "", Color: CommandGray, Bold: false);
+            var rendered = new StringBuilder($"\x1b[0m\x1b[38;2;{line.Color}m");
             var currentColor = line.Color;
-            for (var column = 0; column < line.Text.Length; column++)
+            var currentBold = false;
+            for (var column = 0; column < width; column++)
             {
-                var c = line.Text[column];
-                var color = ColorAt(line, column);
-                if (color != currentColor) output.Append($"\x1b[38;2;{color}m");
+                var c = column < line.Text.Length ? line.Text[column] : ' ';
+                var color = column < line.Text.Length ? ColorAt(line, column) : CommandGray;
+                var bold = column < line.Text.Length && BoldAt(line, column);
+                if (color != currentColor) rendered.Append($"\x1b[38;2;{color}m");
+                if (bold != currentBold) rendered.Append(bold ? "\x1b[1m" : "\x1b[22m");
                 currentColor = color;
-                output.Append(c);
+                currentBold = bold;
+                rendered.Append(c);
             }
+            rows[row] = rendered.ToString();
+            if (fullPaint || row >= _previousRows.Length || rows[row] != _previousRows[row])
+                output.Append($"\x1b[{row + 1};1H").Append(rows[row]);
         }
-        output.Append("\x1b[0m");
+        if (output.Length > 0) output.Append("\x1b[0m");
+        _previousRows = rows;
         previousWidth = width;
         previousHeight = height;
         return output.ToString();
+    }
+
+    internal static bool BoldAt((string Text, string Color, bool Bold) line, int column)
+    {
+        if ("│─╭╮╰╯┬┴├┤┼".Contains(line.Text[column])) return false;
+        if (line.Text.StartsWith('│') && column < line.Text.IndexOf('│', 1))
+            return line.Text.AsSpan(1, line.Text.IndexOf('│', 1) - 1).Trim().SequenceEqual("Path Of Sight");
+        return line.Bold;
     }
 
     internal static string ColorAt((string Text, string Color, bool Bold) line, int column)
     {
         var c = line.Text[column];
         if ("│─╭╮╰╯┬┴├┤┼".Contains(c)) return Muted;
+        if (line.Text.StartsWith('│') && column < line.Text.IndexOf('│', 1) && line.Text.Contains("● "))
+            return line.Text.Contains("● Game connected", StringComparison.Ordinal) ? Green : Muted;
         for (var y = 0; y < Logo.Length; y++)
         {
             var start = line.Text.IndexOf(Logo[y], StringComparison.Ordinal);
             var x = column - start;
             if (start < 0 || x < 0 || x >= Logo[y].Length) continue;
-            var pupil = y is 3 or 4 ? x is >= 10 and <= 17 : y is 2 or 5 && x is >= 11 and <= 16;
+            var pupil = y is 3 or 4 ? x is >= 11 and <= 18 : y is 2 or 5 && x is >= 12 and <= 17;
             return pupil ? Red : White;
         }
+        if (line.Text.StartsWith('│') && column < line.Text.IndexOf('│', 1))
+            return line.Text.Contains("Esc Back", StringComparison.Ordinal) ? Primary : CommandGray;
+        if (line.Text.StartsWith('╭')) return Primary;
         var commandStart = line.Text.IndexOf("1  Connect to game", StringComparison.Ordinal);
         if (commandStart < 0) commandStart = line.Text.IndexOf("2  Open web map", StringComparison.Ordinal);
-        if (commandStart >= 0 && column >= commandStart) return c == '✓' ? Green : CommandGray;
+        if (commandStart >= 0 && column >= commandStart && c == '✓') return Green;
         return line.Color;
     }
 
     internal static List<(string Text, string Color, bool Bold)> Layout(
-        MapSnapshot snapshot, string notice, bool connected, int width, int height)
+        MapSnapshot snapshot, string notice, bool connected, int width, int height, TuiPanel? panel = null)
     {
         var content = new List<(string Text, string Color, bool Bold)>();
         var limit = Math.Max(0, width - 1);
         string Clean(string text) => new(text.Select(c => char.IsControl(c) ? ' ' : c).ToArray());
         string Fit(string text, int size) => text.Length > size ? text[..Math.Max(0, size - 1)] + "…" : text.PadRight(size);
-        void Add(string text = "", string color = White, bool bold = false)
+        void Add(string text = "", string color = CommandGray, bool bold = false)
         {
             text = Clean(text);
             content.Add((text.Length > limit ? text[..limit] : text, color, bold));
@@ -101,29 +131,33 @@ internal sealed class TuiView : IDisposable
         var state = ready ? "✓" : snapshot.Status == "demo" ? "DEMO" : connected ? "WAIT" : "OFF";
         if (limit < 64 || height < 18)
         {
-            if (height >= 5) Add("Path Of Sight  v0.1.0", Primary, true);
-            if (height >= 4) Add(snapshot.Message, Status);
+            if (height >= 7) Add("Path Of Sight  v0.1.0", Primary, true);
+            if (height >= 6) Add(snapshot.Message, Status);
             if (height >= 3)
             {
                 Add("1  Connect to game  " + state);
                 Add("2  Open web map");
-                Add("Q  Quit", Muted);
+                if (height >= 5) { Add("3  Settings"); Add("4  Profiles"); Add("Q  Quit", Muted); }
+                else { Add("3 Settings · 4 Profiles · Q Quit", Muted); }
+                if (height >= 8) Add(notice, Status);
             }
             else if (height == 2)
             {
-                Add("1 Connect  ·  2 Web map");
-                Add("Q Quit", Muted);
+                Add("1 Connect · 2 Web map");
+                Add("3 Settings · 4 Profiles · Q Quit", Muted);
             }
-            else if (height == 1) Add("1 Connect · 2 Web map · Q Quit");
+            else if (height == 1) Add("1 Game · 2 Web · 3 Settings · 4 Profiles · Q Quit");
         }
         else
         {
             var boxWidth = Math.Min(limit, 100);
-            var leftWidth = Math.Clamp(boxWidth * 2 / 5, 28, 36);
+            var leftWidth = Math.Clamp(boxWidth * 2 / 5, 30, 36);
             var rightWidth = boxWidth - leftWidth - 3;
             var bodyHeight = Math.Min(height - 5, 19);
+            var visibleItems = bodyHeight - 4;
+            var firstItem = panel == null ? 0 : Math.Max(0, panel.Selected - visibleItems + 1);
             string Center(string text) => text.PadLeft((leftWidth + text.Length) / 2);
-            void Row(string left = "", string right = "", string color = White, bool bold = false) =>
+            void Row(string left = "", string right = "", string color = CommandGray, bool bold = false) =>
                 Add("│" + Fit(Clean(left), leftWidth) + "│" + Fit(Clean(right), rightWidth) + "│", color, bold);
             const string title = " Path Of Sight  v0.1.0 ";
             Add("╭─" + title + new string('─', leftWidth - title.Length - 1) + "┬" + new string('─', rightWidth) + "╮", Muted);
@@ -132,12 +166,12 @@ internal sealed class TuiView : IDisposable
             {
                 var left = "";
                 var right = "";
-                var color = White;
+                var color = CommandGray;
                 var bold = false;
                 if (y >= artTop && y < artTop + Logo.Length)
                 {
                     left = Center(Logo[y - artTop]);
-                    color = White;
+                    color = CommandGray;
                 }
                 if (y == artTop + Logo.Length + 1) { left = Center("Path Of Sight"); bold = true; }
                 if (y == artTop + Logo.Length + 3)
@@ -153,13 +187,33 @@ internal sealed class TuiView : IDisposable
                     }));
                     color = ready ? "78;186;101" : Muted;
                 }
-                if (y == 1) { right = "  Functions"; color = Primary; bold = true; }
-                if (y == 3) right = "  " + "1  Connect to game".PadRight(rightWidth - 10) + state;
-                if (y == 4) right = "  2  Open web map";
+                if (panel == null)
+                {
+                    if (y == 1) { right = "  Functions"; color = Primary; bold = true; }
+                    if (y == 3) right = "  " + "1  Connect to game".PadRight(rightWidth - 10) + state;
+                    if (y == 4) right = "  2  Open web map";
+                    if (y == 5) right = "  3  Settings";
+                    if (y == 6) right = "  4  Profiles";
+                }
+                else
+                {
+                    if (y == 0) { right = "  " + panel.Title; color = Primary; bold = true; }
+                    if (y == 1) { right = "  Profile: " + panel.Profile; color = Primary; }
+                    var index = firstItem + y - 3;
+                    if (y >= 3 && y < 3 + visibleItems && index < panel.Items.Length)
+                    {
+                        var selected = index == panel.Selected;
+                        right = (selected ? "> " : "  ") + panel.Items[index];
+                        color = selected ? White : CommandGray;
+                        bold = selected;
+                    }
+                    if (y == bodyHeight - 1) { right = $"  {panel.Selected + 1}/{panel.Items.Length}"; color = Primary; }
+                }
                 Row(left, right, color, bold);
             }
             Add("├" + new string('─', leftWidth) + "┼" + new string('─', rightWidth) + "┤", Muted);
-            Row("", "  [1-2] Select".PadRight(rightWidth - 10) + "[Q] Quit", Primary);
+            if (panel == null) Row("", "  [1-4] Select".PadRight(rightWidth - 10) + "[Q] Quit", Primary);
+            else Row("  Esc Back · Q Quit", "  ↑↓ Select · Enter · ←→ Adjust", Primary);
             Add("╰" + new string('─', leftWidth) + "┴" + new string('─', rightWidth) + "╯", Muted);
             var detail = Clean(snapshot.Area.Length > 0 ? snapshot.Message + " · " + snapshot.Area : snapshot.Message);
             var message = Clean(notice);

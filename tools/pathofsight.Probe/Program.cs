@@ -20,8 +20,14 @@ foreach(var slot in slots)
     if(strict)
     {
         var t=live.Terrain(ai);var entities=live.Entities(ai,true);
+        var beforeSleepingReads=reader.ReadCount;
+        var sleepingTimer=System.Diagnostics.Stopwatch.StartNew();
+        var sleeping=live.SleepingRadarEntities(ai);
         Console.WriteLine(JsonSerializer.Serialize(new{area=live.AreaName(ai),hash=live.AreaHash(ai),width=t?.Width,height=t?.Height,
-            player=live.PlayerGrid(lp)?.ToString(),entities=entities.Count,landmarks=live.Landmarks(ai).Count}));
+            player=live.PlayerGrid(lp)?.ToString(),entities=entities.Count,landmarks=live.Landmarks(ai).Count,
+            awakeRarities=entities.Where(e=>e.Category==Poe2Live.EntityCategory.Monster).GroupBy(e=>e.Rarity).ToDictionary(g=>g.Key.ToString(),g=>g.Count()),
+            sleepingRarities=sleeping.Where(e=>e.Category==Poe2Live.EntityCategory.Monster).GroupBy(e=>e.Rarity).ToDictionary(g=>g.Key.ToString(),g=>g.Count()),
+            sleepingReadCount=reader.ReadCount-beforeSleepingReads,sleepingMs=sleepingTimer.ElapsedMilliseconds}));
         if(t!=null && live.PlayerGrid(lp) is {} p)
         {
             var bossRouteAt=Array.IndexOf(args,"--boss-route");

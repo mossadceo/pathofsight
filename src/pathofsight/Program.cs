@@ -51,19 +51,23 @@ public static class Program
     {
         var notice=warning ?? "";
         var last="";
+        var lastRender=0L;
         var connected=false;
         var quitting=false;
         if(!Console.IsOutputRedirected)Console.Title="Path Of Sight";
         using var view = new TuiView();
+        var menu = new TuiMenu(service.Settings);
         void Render()
         {
             var snapshot=service.Snapshot;
             var width=Console.IsOutputRedirected?80:Console.WindowWidth;
             var height=Console.IsOutputRedirected?30:Console.WindowHeight;
-            var state=$"{snapshot.Status}|{snapshot.Message}|{snapshot.Area}|{snapshot.Fresh}|{notice}|{connected}|{width}|{height}";
-            if(Console.IsOutputRedirected && state==last)return;
+            var state=$"{snapshot.Status}|{snapshot.Message}|{snapshot.Area}|{snapshot.Fresh}|{notice}|{connected}|{width}|{height}|{service.Settings.Read().Revision}|{menu.Page}|{menu.Selected}|{menu.Notice}";
+            var now=Environment.TickCount64;
+            if(state==last && (Console.IsOutputRedirected || now-lastRender<200))return;
             last=state;
-            view.Draw(snapshot,notice,connected,width,height);
+            lastRender=now;
+            view.Draw(snapshot,notice,connected,width,height,menu);
         }
         void Command(char key)
         {
@@ -85,20 +89,30 @@ public static class Program
                 Render();
                 string? line;
                 while(!stop.IsCancellationRequested && !quitting && (line=Console.ReadLine())!=null)
-                { if(line.Length>0)Command(line[0]);if(!quitting)Render(); }
+                { if(line.Length>0)Command(menu.Handle(new ConsoleKeyInfo(line[0],0,false,false,false)));if(!quitting)Render(); }
                 exit();
             }
-            else while(!stop.IsCancellationRequested && !quitting)
+            else RunTuiLoop(() =>
             {
-                Render();
-                if(Console.KeyAvailable)Command(CommandKey(Console.ReadKey(true)));
-                Thread.Sleep(200);
-            }
+                if(quitting || !Console.KeyAvailable)return false;
+                Command(menu.Handle(Console.ReadKey(true)));
+                return true;
+            },Render,stop);
         }
         catch(IOException){exit();}
         catch(InvalidOperationException){exit();}
     }
     internal static char CommandKey(ConsoleKeyInfo key) => key.Key == ConsoleKey.Q ? 'q' : key.KeyChar;
+    internal static void RunTuiLoop(Func<bool> readInput, Action render, CancellationToken stop)
+    {
+        while(!stop.IsCancellationRequested)
+        {
+            while(!stop.IsCancellationRequested && readInput()) render();
+            if(stop.IsCancellationRequested)break;
+            render();
+            stop.WaitHandle.WaitOne(10);
+        }
+    }
 
     private static int RenderDemo(string[] args)
     {

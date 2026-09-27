@@ -1,4 +1,3 @@
-using System.Text.Json;
 using System.Text.Json.Serialization;
 using POE2Radar.Core.Game;
 
@@ -11,7 +10,10 @@ public record Point(float X, float Y)
 }
 
 public record Poi(string Id, string Key, string Name, string Kind, Point Position,
-    string Source, bool Remembered = false, bool Completed = false);
+    string Source, bool Remembered = false, bool Completed = false, string? Filter = null)
+{
+    public string FilterCategory => Filter ?? PoiCatalog.Classify(this);
+}
 public record MapSnapshot(string Status, string Message, long Updated, string Instance = "", string Area = "",
     Point? Player = null, [property: JsonIgnore] Poi[]? Points = null, Point[]? Route = null, string? Selected = null,
     string RouteStatus = "", int Width = 0, int Height = 0, string GameVersion = "",
@@ -19,7 +21,8 @@ public record MapSnapshot(string Status, string Message, long Updated, string In
     [property: JsonIgnore] TerrainPicture? Picture = null,
     [property: JsonIgnore] Poe2Live.MapUi MapUi = default,
     [property: JsonIgnore] int ProcessId = 0,
-    [property: JsonIgnore] long PlayerAddress = 0)
+    [property: JsonIgnore] long PlayerAddress = 0,
+    [property: JsonIgnore] long SettingsEpoch = 0)
 {
     public Poi[] Targets => Points ?? [];
     [JsonIgnore] public bool Fresh => Environment.TickCount64 - Updated < 2500;
@@ -36,10 +39,11 @@ public record DisplaySettings
     public double Scale { get; init; } = 1;
     public double OffsetX { get; init; }
     public double OffsetY { get; init; }
-    public string[] Categories { get; init; } = ["transition", "waypoint", "checkpoint", "boss", "quest", "shrine", "poi"];
+    public string[] Categories { get; init; } = PoiCatalog.Enabled.Except(["magic"]).ToArray();
+    public string Routing { get; init; } = "manual";
     public Dictionary<string, string> Names { get; init; } = new();
     public string[] Hidden { get; init; } = [];
-    public bool Shows(Poi p) => Categories.Contains(p.Kind) && !Hidden.Contains(p.Key);
+    public bool Shows(Poi p) => Categories.Contains(p.FilterCategory) && !Hidden.Contains(p.Key);
     public string Label(Poi p) => Names.GetValueOrDefault(p.Key, p.Name);
     public static readonly string[] Kinds = ["transition", "waypoint", "checkpoint", "boss", "quest", "shrine", "poi"];
     public bool Valid() => double.IsFinite(Opacity) && Opacity is >= .1 and <= 1
@@ -47,45 +51,10 @@ public record DisplaySettings
         && double.IsFinite(Scale) && Scale is >= .25 and <= 4
         && double.IsFinite(OffsetX) && Math.Abs(OffsetX) <= 2000
         && double.IsFinite(OffsetY) && Math.Abs(OffsetY) <= 2000
-        && Categories != null && Categories.Length <= 7 && Categories.All(Kinds.Contains)
+        && Routing is "off" or "manual" or "atlas"
+        && Categories != null && Categories.Length <= PoiCatalog.All.Length && Categories.All(PoiCatalog.Enabled.Contains)
         && Hidden != null && Hidden.Length <= 10000 && Hidden.All(x => x is { Length: <= 1000 })
         && Names != null && Names.Count <= 10000 && Names.All(x => x.Key.Length <= 1000 && x.Value is { Length: <= 160 });
-}
-
-public sealed class SettingsStore
-{
-    private DisplaySettings _value = new();
-    private readonly string _path;
-    private readonly object _gate = new();
-    public static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web) { WriteIndented = false };
-    public DisplaySettings Value => Volatile.Read(ref _value);
-    public string? LoadWarning { get; }
-    public SettingsStore(string path)
-    {
-        _path = path;
-        try
-        {
-            if (File.Exists(path))
-            {
-                var loaded = JsonSerializer.Deserialize<DisplaySettings>(File.ReadAllText(path), Json);
-                if (loaded is null || !loaded.Valid()) throw new InvalidDataException("Invalid settings");
-                _value = loaded;
-            }
-        }
-        catch (Exception e) when (e is IOException or UnauthorizedAccessException or JsonException or ArgumentException)
-        { LoadWarning = "Could not read settings; using defaults. " + e.Message; }
-    }
-    public void Save(DisplaySettings value)
-    {
-        if (!value.Valid()) throw new ArgumentException("Недопустимые настройки");
-        lock (_gate)
-        {
-            Directory.CreateDirectory(Path.GetDirectoryName(_path)!);
-            File.WriteAllText(_path + ".tmp", JsonSerializer.Serialize(value, Json));
-            File.Move(_path + ".tmp", _path, true);
-            Volatile.Write(ref _value, value);
-        }
-    }
 }
 
 // One tracker per instance. Never infer a specific mechanic from the mere presence of an icon.
@@ -103,11 +72,11 @@ public sealed class PoiTracker
     public Poi[] Update(IEnumerable<Poi> observed)
     {
         foreach (var id in _objects.Keys.ToArray()) _objects[id] = _objects[id] with { Remembered = true };
-        var bosses = new List<Poi>();
+        var moving = new List<Poi>();
         foreach (var p in observed)
-            if (p.Source == "entity" && p.Kind == "boss") bosses.Add(p);
+            if (p.Source == "entity" && p.Kind is "boss" or "npc" or "magic" or "rare") moving.Add(p);
             else _objects[p.Id] = p with { Remembered = false };
-        var result = _objects.Values.Concat(bosses).ToList();
+        var result = _objects.Values.Concat(moving).ToList();
         var used = new HashSet<string>();
         foreach (var tile in _landmarks)
         {
@@ -125,7 +94,7 @@ public sealed class PoiTracker
                 used.Add(match.Id);
                 used.Add(tile.Id);
                 var at = result.IndexOf(match);
-                result[at] = match with { Id = tile.Id, Key = tile.Key, Name = tile.Name };
+                result[at] = match with { Id = tile.Id, Key = tile.Key, Name = tile.Name, Filter = tile.Filter ?? tile.FilterCategory };
             }
         }
         return result.OrderBy(p => p.Kind).ThenBy(p => p.Name).ToArray();
@@ -145,12 +114,17 @@ public sealed class PoiTracker
     {
         if (e.Category == Poe2Live.EntityCategory.Monster)
         {
-            if (!Poe2Live.IsVisibleBoss(e.Rarity, e.HpCur, e.HpMax, e.Reaction)) return null;
-            return new($"entity:{e.Id}", e.Metadata, EntityNameResolver.Shared.ResolveOrShorten(e.Metadata), "boss",
+            if (!Poe2Live.IsVisibleMonster(e.Rarity, e.HpCur, e.HpMax, e.Reaction)) return null;
+            var monsterKind = e.Rarity switch
+            {
+                Poe2Live.Rarity.Magic => "magic",
+                Poe2Live.Rarity.Rare => "rare", _ => "boss"
+            };
+            return new($"entity:{e.Id}", e.Metadata, EntityNameResolver.Shared.ResolveOrShorten(e.Metadata), monsterKind,
                 new(e.Grid.X, e.Grid.Y), "entity");
         }
         // Moving entities must not be remembered as permanent map objectives.
-        if (e.Category is Poe2Live.EntityCategory.Player or Poe2Live.EntityCategory.Npc) return null;
+        if (e.Category == Poe2Live.EntityCategory.Player) return null;
         var name = EntityNameResolver.Shared.ResolveOrShorten(e.Metadata);
         var abyss = e.Metadata.Contains("Abyss", StringComparison.OrdinalIgnoreCase) || name.Contains("Abyss", StringComparison.OrdinalIgnoreCase);
         if (abyss && (e.Metadata.Contains("Crack", StringComparison.OrdinalIgnoreCase)
@@ -159,6 +133,8 @@ public sealed class PoiTracker
             || name.Contains("Fissure", StringComparison.OrdinalIgnoreCase))) return null;
         if (name.StartsWith("AreaTransition", StringComparison.OrdinalIgnoreCase)) name = "Area Transition";
         var kind = Kind(e.Metadata, name, true);
+        if (e.Category == Poe2Live.EntityCategory.Npc) kind = "npc";
+        if (e.Category == Poe2Live.EntityCategory.Chest && kind == "poi") kind = "chest";
         if (!e.Poi && e.Category != Poe2Live.EntityCategory.Transition && kind == "poi") return null;
         if (e.Category == Poe2Live.EntityCategory.Transition) kind = "transition";
         return new($"entity:{e.Id}", e.Metadata, name, kind,

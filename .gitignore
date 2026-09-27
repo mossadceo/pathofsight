@@ -44,7 +44,6 @@ settings.json
 .cline/
 .roo/
 .aider*
-AGENTS.md
 AGENTS.local.md
 CLAUDE.md
 CLAUDE.local.md

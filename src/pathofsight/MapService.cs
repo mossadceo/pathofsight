@@ -11,10 +11,21 @@ namespace pathofsight;
 public sealed class MapService : IDisposable
 {
     private MapSnapshot _snapshot = MapSnapshot.Empty("waiting", "Waiting for connection command");
-    public MapSnapshot Snapshot => Volatile.Read(ref _snapshot);
+    public MapSnapshot Snapshot
+    {
+        get
+        {
+            var snapshot = Volatile.Read(ref _snapshot);
+            var settings = Settings.Read();
+            return snapshot.SettingsEpoch != settings.ProfileEpoch || settings.Settings.Routing == "off"
+                || (snapshot.Selected != null && !snapshot.Targets.Any(p => p.Id == snapshot.Selected && settings.Settings.Shows(p)))
+                ? snapshot with { Route = [], Selected = null, RouteStatus = "" } : snapshot;
+        }
+    }
     public SettingsStore Settings { get; }
     private readonly CancellationTokenSource _stop = new();
-    private readonly ConcurrentQueue<(string Instance, string? Id)> _selections = new();
+    private readonly ConcurrentQueue<(string Instance, string? Id, long Revision)> _selections = new();
+    private long _routeEpoch = -1;
     private readonly PoiTracker _tracker = new();
     private PathPlanner _planner = new();
     private string? _selected;
@@ -40,38 +51,55 @@ public sealed class MapService : IDisposable
     public void Connect() => _connected = true;
     public void Demo(bool enabled) { _demo = enabled; Interlocked.Increment(ref _demoReset); }
     public void DiscoverDemo() => Interlocked.Increment(ref _demoDiscover);
-    public bool Select(string instance, string? id)
+    public bool Select(string instance, string? id, string? profile = null, long? revision = null)
     {
         var s = Snapshot;
-        if (!s.Fresh || instance != s.Instance || s.Terrain == null || (id != null && !s.Targets.Any(x => x.Id == id))) return false;
-        _selections.Enqueue((instance, id)); return true;
+        var settings = Settings.Read();
+        if ((profile != null && profile != settings.Profile) || (revision != null && revision != settings.Revision)) return false;
+        if (settings.Settings.Routing == "off" || !s.Fresh || instance != s.Instance || s.Terrain == null
+            || (id != null && !s.Targets.Any(x => x.Id == id && settings.Settings.Shows(x)))) return false;
+        _selections.Enqueue((instance, id, settings.Revision)); return true;
     }
-    private void Publish(MapSnapshot snapshot) => Volatile.Write(ref _snapshot, snapshot);
+    private void Publish(MapSnapshot snapshot) => Volatile.Write(ref _snapshot, snapshot with { SettingsEpoch = _routeEpoch });
     private void Clear(string status, string message)
     {
         _tracker.Reset("", []); _selected = null; _manualSelected = null; _route = []; _routeStatus = "";
+        Settings.SetInstance("");
         while (_selections.TryDequeue(out _)) { }
         Publish(MapSnapshot.Empty(status, message));
     }
     private void Reset(string key, IEnumerable<Poi> landmarks)
     {
         _tracker.Reset(key, landmarks); _planner = new(); _selected = null; _manualSelected = null; _route = []; _lastPlan = 0; _routeStatus = "";
+        Settings.SetInstance(key);
     }
     internal static Poi? AutomaticBossTarget(string areaCode, Poi[] points) =>
         areaCode.StartsWith("Map", StringComparison.OrdinalIgnoreCase)
-            ? points.Where(p => p.Kind == "boss")
-                .OrderBy(p => p.Source == "entity" ? 0 : p.Id.StartsWith("marker:boss:", StringComparison.Ordinal) ? 1 : 2)
-                .FirstOrDefault()
+            ? points.FirstOrDefault(p => p.Source == "tile" && p.Id.StartsWith("marker:boss:", StringComparison.Ordinal))
+                ?? points.FirstOrDefault(p => p.Source == "tile" && Poe2Live.IsMapBossArenaTile(areaCode, p.Key))
             : null;
     internal static int RouteSearchBudget(string areaCode, Poi target, Poe2Live.TerrainData terrain) =>
         target.Kind == "boss" && areaCode.StartsWith("Map", StringComparison.OrdinalIgnoreCase)
             ? Math.Max(1_000_000, terrain.Walkable.Length * 2) : 250_000;
+    internal static Poi? RouteTarget(string areaCode, Poi[] points, DisplaySettings settings, string? manual)
+    {
+        if (settings.Routing == "off") return null;
+        var visible = points.Where(settings.Shows).ToArray();
+        return visible.FirstOrDefault(p => p.Id == manual)
+            ?? (settings.Routing == "atlas" ? AutomaticBossTarget(areaCode, visible) : null);
+    }
     private void Route(string key, string areaCode, Poe2Live.TerrainData terrain, Point player, Poi[] points)
     {
+        var view = Settings.Read();
+        var settings = view.Settings;
+        if (_routeEpoch != view.ProfileEpoch)
+        { _manualSelected = null; _selected = null; _route = []; _routeStatus = ""; _lastPlan = 0; _routeEpoch = view.ProfileEpoch; }
         while (_selections.TryDequeue(out var command))
-            if (command.Instance == key) _manualSelected = command.Id;
-        var target = points.FirstOrDefault(p => p.Id == _manualSelected);
-        if (target is null) { _manualSelected = null; target = AutomaticBossTarget(areaCode, points); }
+            if (command.Instance == key && command.Revision == view.Revision) _manualSelected = command.Id;
+        if (settings.Routing == "off")
+        { _manualSelected = null; _selected = null; _route = []; _routeStatus = ""; return; }
+        var target = RouteTarget(areaCode, points, settings, _manualSelected);
+        if (target?.Id != _manualSelected) _manualSelected = null;
         var changed = _selected != target?.Id;
         _selected = target?.Id;
         if (target is null) { _selected = null; _route = []; _routeStatus = ""; return; }
@@ -131,6 +159,8 @@ public sealed class MapService : IDisposable
         string instance = "";
         Poi[] bossHints = [];
         long nextBossScan = 0;
+        List<Poe2Live.EntityDot> sleepingEntities = [];
+        long nextSleepingScan = 0;
         var session = Guid.NewGuid().ToString("N")[..8];
         var unresolvedSince = Environment.TickCount64;
         while (!_demo && !_stop.IsCancellationRequested && !lifetime.HasExited)
@@ -168,12 +198,15 @@ public sealed class MapService : IDisposable
                 }
                 var landmarks = live.Landmarks(area).Select(l => new Poi("tile:" + l.Key,
                     live.AreaCode(area) + ":" + l.Path, l.CuratedName ?? l.Name, PoiTracker.Kind(l.Path, l.CuratedName ?? l.Name),
-                    new(l.Center.X, l.Center.Y), "tile")).Where(p => p.Position.In(terrain));
+                    new(l.Center.X, l.Center.Y), "tile",
+                    Filter: Poe2Live.IsMapBossArenaTile(live.AreaCode(area), l.Path) ? "map-boss" : null)).Where(p => p.Position.In(terrain));
                 Reset(key, landmarks);
                 picture = TerrainPicture.Create(terrain);
                 instance = key;
                 bossHints = [];
                 nextBossScan = 0;
+                sleepingEntities = [];
+                nextSleepingScan = 0;
             }
             if (live.AreaCode(area).StartsWith("Map", StringComparison.OrdinalIgnoreCase)
                 && bossHints.Length == 0 && Environment.TickCount64 >= nextBossScan)
@@ -183,7 +216,15 @@ public sealed class MapService : IDisposable
                     new(m.Grid.X, m.Grid.Y), "tile")).Where(p => p.Position.In(terrain)).ToArray();
                 nextBossScan = Environment.TickCount64 + 2000;
             }
-            var points = _tracker.Update(live.Entities(area, pointsOfInterestOnly: true).Select(PoiTracker.FromEntity)
+            if (Environment.TickCount64 >= nextSleepingScan)
+            {
+                sleepingEntities = live.SleepingRadarEntities(area);
+                nextSleepingScan = Environment.TickCount64 + 2000;
+            }
+            var awake = live.Entities(area, pointsOfInterestOnly: true);
+            var awakeIds = awake.Select(e => e.Id).ToHashSet();
+            sleepingEntities.RemoveAll(e => awakeIds.Contains(e.Id));
+            var points = _tracker.Update(awake.Concat(sleepingEntities).Select(PoiTracker.FromEntity)
                 .OfType<Poi>().Where(p => p.Position.In(terrain)).Select(p => p with { Key = live.AreaCode(area) + ":" + p.Key }));
             if (bossHints.Length > 0)
                 points = points.Where(p => p.Source != "tile" || !Poe2Live.IsMapBossArenaTile(live.AreaCode(area), p.Key))
@@ -286,7 +327,9 @@ public sealed record DemoFixture(Poe2Live.TerrainData Terrain, Point Player, Poi
          new("tile:isolated", "demo/isolated", "Недоступная комната", "quest", new(210,133), "tile")],
         [new("entity:wp", "demo/waypoint", "Waypoint", "waypoint", new(32,82), "entity"),
          new("entity:cp", "demo/checkpoint", "Checkpoint", "checkpoint", new(58,97), "entity"),
-         new("entity:sh", "demo/shrine", "Shrine", "shrine", new(141,99), "entity")],
+         new("entity:sh", "demo/shrine", "Shrine", "shrine", new(141,99), "entity"),
+         new("entity:magic", "demo/magic", "Magic monster", "magic", new(155,54), "entity"),
+         new("entity:rare", "demo/rare", "Rare monster", "rare", new(200,65), "entity")],
         [new("entity:exit", "demo/exit-object", "The Grelwood", "transition", new(211,42), "entity")]);
     }
 }

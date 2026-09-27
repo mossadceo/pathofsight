@@ -32,7 +32,8 @@ public sealed class MapSurface : FrameworkElement
     public static string ColorFor(string kind) => kind switch
     {
         "transition" => "#D9E6AC", "waypoint" => "#72C4F0", "checkpoint" => "#83E1C1",
-        "boss" => "#F09382", "quest" => "#E2C379", "shrine" => "#C4A3F2", _ => "#B0B9B0"
+        "boss" => "#F09382", "quest" => "#E2C379", "shrine" => "#C4A3F2",
+        "magic" => "#75A7FF", "rare" => "#F4D35E", _ => "#B0B9B0"
     };
     protected override void OnRender(DrawingContext dc)
     {

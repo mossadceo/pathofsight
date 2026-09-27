@@ -49,7 +49,10 @@ public sealed class LocalServer : IAsyncDisposable
             var s = service.Snapshot;
             // Clear stale geometry and objectives for the browser, just as for the overlay.
             if (s.Status is "ready" or "demo" && !s.Fresh) s = MapSnapshot.Empty("loading", "Данные обновляются…");
-            return Results.Json(new { snapshot = s, settings = service.Settings.Value,
+            var view = service.Settings.Read();
+            if (s.Instance != view.Instance) s = MapSnapshot.Empty("loading", "Локация обновляется…");
+            return Results.Json(new { snapshot = s, settings = view.Settings, profile = view.Profile,
+                revision = view.Revision, settingsInstance = view.Instance, temporary = view.Temporary, filters = PoiCatalog.All,
                 projection = new { cos = MapProjection.CameraCos, sin = MapProjection.CameraSin } }, SettingsStore.Json);
         });
         app.MapGet("/api/terrain", (string instance) =>
@@ -60,13 +63,25 @@ public sealed class LocalServer : IAsyncDisposable
         app.MapPost("/api/target", async (HttpRequest request) =>
         {
             var command = await request.ReadFromJsonAsync<TargetCommand>(SettingsStore.Json);
-            return command != null && service.Select(command.Instance, command.Id) ? Results.Ok() : Results.Conflict(new { error = "Локация или цель уже изменилась" });
+            return command is { Profile: not null, Revision: not null }
+                && service.Select(command.Instance, command.Id, command.Profile, command.Revision)
+                ? Results.Ok() : Results.Conflict(new { error = "Локация, профиль или цель уже изменились, либо маршрутизация выключена" });
         });
         app.MapPost("/api/settings", async (HttpRequest request) =>
         {
-            var settings = await request.ReadFromJsonAsync<DisplaySettings>(SettingsStore.Json);
-            if (settings is null || !settings.Valid()) return Results.BadRequest(new { error = "Недопустимые настройки" });
-            service.Settings.Save(settings); return Results.Ok();
+            var command = await request.ReadFromJsonAsync<SettingsCommand>(SettingsStore.Json);
+            if (command is not { Settings: not null, Profile: not null, Instance: not null, Revision: not null }
+                || !command.Settings.Valid()) return Results.BadRequest(new { error = "Недопустимые настройки" });
+            return service.Settings.WebSave(command.Profile, command.Instance, command.Revision.Value, command.Settings, false)
+                ? Results.Ok() : Results.Conflict(new { error = "Настройки изменились. Повторите изменение." });
+        });
+        app.MapPost("/api/filters", async (HttpRequest request) =>
+        {
+            var command = await request.ReadFromJsonAsync<SettingsCommand>(SettingsStore.Json);
+            if (command is not { Settings: not null, Profile: not null, Instance: not null, Revision: not null }
+                || !command.Settings.Valid()) return Results.BadRequest(new { error = "Недопустимый фильтр" });
+            return service.Settings.WebSave(command.Profile, command.Instance, command.Revision.Value, command.Settings, true, command.Reset)
+                ? Results.Ok() : Results.Conflict(new { error = "Локация или настройки изменились. Повторите изменение." });
         });
         app.MapPost("/api/demo", async (HttpRequest request) =>
         {
@@ -85,6 +100,7 @@ public sealed class LocalServer : IAsyncDisposable
         return new(app, origin);
     }
     public async ValueTask DisposeAsync() { await _app.StopAsync(); await _app.DisposeAsync(); }
-    public record TargetCommand(string Instance, string? Id);
+    public record TargetCommand(string Instance, string? Id, string? Profile = null, long? Revision = null);
+    public record SettingsCommand(string? Profile, string? Instance, long? Revision, DisplaySettings? Settings, bool Reset = false);
     public record DemoCommand(bool Enabled = false, bool Discover = false);
 }
