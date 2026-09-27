@@ -55,7 +55,7 @@ foreach (var (w,h) in new[] { (120,50), (80,24), (65,18), (64,18), (40,12), (40,
         $"TUI has no prompt box or lower URL at {w}x{h}");
     if (h>=4) Check(screen.Any(line=>line.Text.Contains("Connect to game"))&&
         screen.Any(line=>line.Text.Contains("Open web map")), $"TUI keeps commands at {w}x{h}");
-    if (h>=24) Check(screen[0].Text.Contains("Path Of Sight  v0.1.0")&&screen.Any(line=>line.Text.Contains("▄████████  ▐███████")),
+    if (h>=24) Check(screen[0].Text.Contains("Path Of Sight  v0.2.0")&&screen.Any(line=>line.Text.Contains("▄████████  ▐███████")),
         $"logo appears on startup at {w}x{h}");
 }
 foreach (var status in new[] { "waiting", "loading", "ready", "demo", "error", "access", "incompatible" })

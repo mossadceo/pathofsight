@@ -90,7 +90,7 @@ public sealed class LocalServer : IAsyncDisposable
             if (command.Discover) service.DiscoverDemo(); else service.Demo(command.Enabled);
             return Results.Ok();
         });
-        app.MapGet("/api/diagnostics", () => Results.Json(new { product = "Path Of Sight 0.1.0",
+        app.MapGet("/api/diagnostics", () => Results.Json(new { product = "Path Of Sight 0.2.0",
             upstream = "Sikaka/POE2Radar@a23cdb6bf8dfb59dee53008a86439f05b24e3a57",
             liveVerified = false, status = service.Snapshot.Status, gameVersion = service.Snapshot.GameVersion,
             terrain = new { service.Snapshot.Width, service.Snapshot.Height }, poiCount = service.Snapshot.Targets.Length,

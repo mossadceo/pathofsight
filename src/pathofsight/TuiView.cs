@@ -131,7 +131,7 @@ internal sealed class TuiView : IDisposable
         var state = ready ? "✓" : snapshot.Status == "demo" ? "DEMO" : connected ? "WAIT" : "OFF";
         if (limit < 64 || height < 18)
         {
-            if (height >= 7) Add("Path Of Sight  v0.1.0", Primary, true);
+            if (height >= 7) Add("Path Of Sight  v0.2.0", Primary, true);
             if (height >= 6) Add(snapshot.Message, Status);
             if (height >= 3)
             {
@@ -159,7 +159,7 @@ internal sealed class TuiView : IDisposable
             string Center(string text) => text.PadLeft((leftWidth + text.Length) / 2);
             void Row(string left = "", string right = "", string color = CommandGray, bool bold = false) =>
                 Add("│" + Fit(Clean(left), leftWidth) + "│" + Fit(Clean(right), rightWidth) + "│", color, bold);
-            const string title = " Path Of Sight  v0.1.0 ";
+            const string title = " Path Of Sight  v0.2.0 ";
             Add("╭─" + title + new string('─', leftWidth - title.Length - 1) + "┬" + new string('─', rightWidth) + "╮", Muted);
             var artTop = Math.Max(1, (bodyHeight - Logo.Length - 5) / 2);
             for (var y = 0; y < bodyHeight; y++)
