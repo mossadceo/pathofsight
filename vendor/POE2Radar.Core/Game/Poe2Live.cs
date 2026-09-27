@@ -21,6 +21,7 @@ public sealed class Poe2Live
     private readonly Dictionary<nint, nint> _posAddr = new();      // entity → Positioned component (0 = none)
     private readonly Dictionary<nint, nint> _ompAddr = new();      // entity → ObjectMagicProperties (0 = none)
     private readonly Dictionary<nint, nint> _chestAddr = new();    // entity → Chest component (0 = none)
+    private readonly Dictionary<nint, nint> _shrineAddr = new();   // entity → Shrine component (0 = none)
     private readonly Dictionary<nint, EntityCategory> _category = new();
     private readonly Dictionary<nint, string> _meta = new();
     private readonly Dictionary<nint, nint> _iconAddr = new();     // entity → MinimapIcon component (0 = none); game POI
@@ -132,12 +133,12 @@ public sealed class Poe2Live
     /// <summary>Player grid position from the Render component.</summary>
     public System.Numerics.Vector2? PlayerGrid(nint localPlayer) => EntityGrid(localPlayer);
 
-    /// <summary>Read visible monster rarities and supported points of interest from awake entities.</summary>
+    /// <summary>Read monster rarities, including dead IDs needed to retire sleeping markers, and awake POIs.</summary>
     public List<EntityDot> Entities(nint areaInstance)
     {
         if (areaInstance != _entCacheKey)
         {
-            _renderAddr.Clear(); _lifeAddr.Clear(); _posAddr.Clear(); _ompAddr.Clear(); _chestAddr.Clear();
+            _renderAddr.Clear(); _lifeAddr.Clear(); _posAddr.Clear(); _ompAddr.Clear(); _chestAddr.Clear(); _shrineAddr.Clear();
             _category.Clear(); _meta.Clear(); _iconAddr.Clear(); _rarity.Clear(); _idAt.Clear();
             _entCacheKey = areaInstance;
         }
@@ -187,13 +188,16 @@ public sealed class Poe2Live
                 var rarity = ReadRarity(entity);
                 var (cur, max) = ReadHp(entity);
                 var reaction = ReadReaction(entity);
-                if (!IsVisibleMonster(rarity, cur, max, reaction)) continue;
+                if (!IsVisibleMonster(rarity, cur, max, reaction)
+                    && !((rarity is Rarity.Magic or Rarity.Rare or Rarity.Unique) && max > 0 && cur <= 0)) continue;
                 dots.Add(new EntityDot(id, entity, g, wv, cat, _meta.GetValueOrDefault(entity, ""),
                     cur, max, false, reaction, rarity, false));
                 continue;
             }
             var poiMeta = _meta.GetValueOrDefault(entity, "");
-            var (isPoi, completed) = ReadIcon(entity);
+            var (isPoi, completed) = ReadIcon(entity, poiMeta);
+            if (poiMeta.StartsWith("Metadata/Shrines/", StringComparison.OrdinalIgnoreCase))
+                completed |= ReadShrineUsed(entity);
             var earlyPoi = IsEarlyPoiMetadata(poiMeta);
             if (isPoi || earlyPoi || cat is EntityCategory.Transition or EntityCategory.Npc or EntityCategory.Chest
                 || poiMeta.StartsWith("Metadata/Shrines/", StringComparison.OrdinalIgnoreCase)
@@ -299,7 +303,7 @@ public sealed class Poe2Live
     private void EvictEntity(nint entity)
     {
         _renderAddr.Remove(entity); _lifeAddr.Remove(entity); _posAddr.Remove(entity);
-        _ompAddr.Remove(entity); _chestAddr.Remove(entity); _category.Remove(entity);
+        _ompAddr.Remove(entity); _chestAddr.Remove(entity); _shrineAddr.Remove(entity); _category.Remove(entity);
         _meta.Remove(entity); _iconAddr.Remove(entity); _rarity.Remove(entity);
     }
 
@@ -307,12 +311,11 @@ public sealed class Poe2Live
     /// The entity's POI state from its MinimapIcon component:
     /// <list type="bullet">
     /// <item><c>poi</c> — the game marks it as a map POI (component present).</item>
-    /// <item><c>complete</c> — the game has FADED the icon because its encounter is finished
-    ///   (CompletedState != 0). The component stays put once resolved, so we cache only its ADDRESS
-    ///   and read the flag live every tick (it flips, e.g. on claiming an expedition reward).</item>
+    /// <item><c>complete</c> — the standard completion flag is set, or a Brequel hand has closed.
+    ///   The component stays put once resolved, so cache only its address and read its state live.</item>
     /// </list>
     /// </summary>
-    private (bool poi, bool complete) ReadIcon(nint entity)
+    private (bool poi, bool complete) ReadIcon(nint entity, string metadata)
     {
         if (!_iconAddr.TryGetValue(entity, out var icon))
         {
@@ -320,9 +323,16 @@ public sealed class Poe2Live
             _iconAddr[entity] = icon; // cache even if 0, to avoid re-walking non-POI entities
         }
         if (icon == 0) return (false, false);
-        var complete = _reader.TryReadStruct<int>(icon + Poe2.MinimapIcon.CompletedState, out var s) && s != 0;
-        return (true, complete);
+        _reader.TryReadStruct<int>(icon + Poe2.MinimapIcon.CompletedState, out var standard);
+        var brequel = 0;
+        if (metadata.Equals("Metadata/MiscellaneousObjects/Brequel/BrequelInitiator", StringComparison.OrdinalIgnoreCase))
+            _reader.TryReadStruct<int>(icon + Poe2.MinimapIcon.BrequelFinished, out brequel);
+        return (true, IsCompletedIcon(metadata, standard, brequel));
     }
+
+    public static bool IsCompletedIcon(string metadata, int standard, int brequel) => standard != 0
+        || (metadata.Equals("Metadata/MiscellaneousObjects/Brequel/BrequelInitiator", StringComparison.OrdinalIgnoreCase)
+            && brequel == 1);
 
     private Rarity ReadRarity(nint entity)
     {
@@ -562,19 +572,27 @@ public sealed class Poe2Live
         return name.EndsWith(".tdt", StringComparison.OrdinalIgnoreCase) ? name[..^4] : name;
     }
 
+    /// <summary>Bound terrain allocations while accepting the live Azmerian Ranges grid.</summary>
+    public static bool IsPlausibleTerrainGrid(long totalBytes, int bytesPerRow)
+    {
+        if (bytesPerRow is <= 0 or > 65536 || totalBytes is <= 0 or > 64 * 1024 * 1024
+            || totalBytes % bytesPerRow != 0) return false;
+        var rows = totalBytes / bytesPerRow;
+        return rows is > 0 and <= 65536 && (long)bytesPerRow * 2 * rows <= 32_000_000;
+    }
+
     /// <summary>Read the packed walkable grid (one nibble per cell, 2 cells/byte) into a flat 0/1 array.</summary>
     public TerrainData? Terrain(nint areaInstance)
     {
         var terrain = areaInstance + Poe2.AreaInstance.TerrainMetadata;
         var first = Ptr(terrain + Poe2.Terrain.GridWalkableData);
         if (!_reader.TryReadStruct<nint>(terrain + Poe2.Terrain.GridWalkableData + 8, out var last) || last == 0) return null;
-        if (!_reader.TryReadStruct<int>(terrain + Poe2.Terrain.BytesPerRow, out var bytesPerRow) || bytesPerRow <= 0 || bytesPerRow > 65536) return null;
+        if (!_reader.TryReadStruct<int>(terrain + Poe2.Terrain.BytesPerRow, out var bytesPerRow)) return null;
         var totalBytes = (long)last - (long)first;
-        if (first == 0 || totalBytes <= 0 || totalBytes > 64 * 1024 * 1024) return null;
+        if (first == 0 || !IsPlausibleTerrainGrid(totalBytes, bytesPerRow)) return null;
 
         var rows = (int)(totalBytes / bytesPerRow);
         var width = bytesPerRow * 2;
-        if (rows <= 0 || rows > 65536 || (long)width * rows > 16_000_000 || totalBytes % bytesPerRow != 0) return null;
 
         var raw = new byte[totalBytes];
         if (_reader.TryReadBytes(first, raw) != raw.Length) return null;
@@ -718,6 +736,12 @@ public sealed class Poe2Live
         if (!_chestAddr.TryGetValue(entity, out var c)) { c = ResolveComponent(entity, "Chest"); _chestAddr[entity] = c; }
         if (c == 0) return false;
         return _reader.TryReadStruct<byte>(c + Poe2.ChestComponent.OpenState, out var b) && b != 0;
+    }
+
+    private bool ReadShrineUsed(nint entity)
+    {
+        if (!_shrineAddr.TryGetValue(entity, out var shrine)) { shrine = ResolveComponent(entity, "Shrine"); _shrineAddr[entity] = shrine; }
+        return shrine != 0 && _reader.TryReadStruct<int>(shrine + Poe2.ShrineComponent.Used, out var used) && used == 1;
     }
 
     private EntityCategory Categorize(nint entity)

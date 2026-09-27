@@ -78,6 +78,15 @@ public sealed class MapService : IDisposable
             ? points.FirstOrDefault(p => p.Source == "tile" && p.Id.StartsWith("marker:boss:", StringComparison.Ordinal))
                 ?? points.FirstOrDefault(p => p.Source == "tile" && Poe2Live.IsMapBossArenaTile(areaCode, p.Key))
             : null;
+    internal static IEnumerable<Poe2Live.EntityDot> RadarEntities(
+        IEnumerable<Poe2Live.EntityDot> awake, IEnumerable<Poe2Live.EntityDot> sleeping, HashSet<uint> dead)
+    {
+        var observed = awake.ToArray();
+        foreach (var e in observed)
+            if (e.Category == Poe2Live.EntityCategory.Monster && e.HpMax > 0 && e.HpCur <= 0) dead.Add(e.Id);
+        var awakeIds = observed.Select(e => e.Id).ToHashSet();
+        return observed.Concat(sleeping.Where(e => !awakeIds.Contains(e.Id) && !dead.Contains(e.Id)));
+    }
     internal static int RouteSearchBudget(string areaCode, Poi target, Poe2Live.TerrainData terrain) =>
         target.Kind == "boss" && areaCode.StartsWith("Map", StringComparison.OrdinalIgnoreCase)
             ? Math.Max(1_000_000, terrain.Walkable.Length * 2) : 250_000;
@@ -160,6 +169,7 @@ public sealed class MapService : IDisposable
         Poi[] bossHints = [];
         long nextBossScan = 0;
         List<Poe2Live.EntityDot> sleepingEntities = [];
+        var deadMonsterIds = new HashSet<uint>();
         long nextSleepingScan = 0;
         var session = Guid.NewGuid().ToString("N")[..8];
         var unresolvedSince = Environment.TickCount64;
@@ -199,13 +209,15 @@ public sealed class MapService : IDisposable
                 var landmarks = live.Landmarks(area).Select(l => new Poi("tile:" + l.Key,
                     live.AreaCode(area) + ":" + l.Path, l.CuratedName ?? l.Name, PoiTracker.Kind(l.Path, l.CuratedName ?? l.Name),
                     new(l.Center.X, l.Center.Y), "tile",
-                    Filter: Poe2Live.IsMapBossArenaTile(live.AreaCode(area), l.Path) ? "map-boss" : null)).Where(p => p.Position.In(terrain));
+                    Filter: Poe2Live.IsMapBossArenaTile(live.AreaCode(area), l.Path) ? "map-boss" : null))
+                    .Where(p => p.Position.In(terrain) && PoiCatalog.KeepMapPoi(live.AreaCode(area), p));
                 Reset(key, landmarks);
                 picture = TerrainPicture.Create(terrain);
                 instance = key;
                 bossHints = [];
                 nextBossScan = 0;
                 sleepingEntities = [];
+                deadMonsterIds.Clear();
                 nextSleepingScan = 0;
             }
             if (live.AreaCode(area).StartsWith("Map", StringComparison.OrdinalIgnoreCase)
@@ -222,13 +234,13 @@ public sealed class MapService : IDisposable
                 nextSleepingScan = Environment.TickCount64 + 2000;
             }
             var awake = live.Entities(area);
-            var awakeIds = awake.Select(e => e.Id).ToHashSet();
-            sleepingEntities.RemoveAll(e => awakeIds.Contains(e.Id));
-            var points = _tracker.Update(awake.Concat(sleepingEntities).Select(PoiTracker.FromEntity)
-                .OfType<Poi>().Where(p => p.Position.In(terrain)).Select(p => p with { Key = live.AreaCode(area) + ":" + p.Key }));
+            var points = _tracker.Update(RadarEntities(awake, sleepingEntities, deadMonsterIds).Select(PoiTracker.FromEntity)
+                .OfType<Poi>().Where(p => p.Position.In(terrain) && PoiCatalog.KeepMapPoi(live.AreaCode(area), p))
+                .Select(p => p with { Key = live.AreaCode(area) + ":" + p.Key }));
             if (bossHints.Length > 0)
                 points = points.Where(p => p.Source != "tile" || !Poe2Live.IsMapBossArenaTile(live.AreaCode(area), p.Key))
                     .Concat(bossHints).ToArray();
+            points = points.Select(p => p with { Name = PoiCatalog.ShortName(p) }).ToArray();
             var grid = live.PlayerGrid(playerAddress);
             var position = grid is { } g ? new Point(g.X, g.Y) : null;
             if (position is null || !position.In(terrain))
@@ -286,7 +298,7 @@ public sealed class MapService : IDisposable
         {
             var observed = fixture.Objects;
             if (_demoDiscover != discovery && !seen) { seen = true; observed = fixture.Objects.Concat(fixture.Discovered).ToArray(); }
-            var points = _tracker.Update(observed);
+            var points = _tracker.Update(observed).Select(p => p with { Name = PoiCatalog.ShortName(p) }).ToArray();
             Route(key, "", fixture.Terrain, fixture.Player, points);
             Publish(new("demo", "DEMO · simulated map, not game data", Environment.TickCount64,
                 key, "Training area", fixture.Player, points, _route, _selected, _routeStatus,

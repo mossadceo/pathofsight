@@ -28,6 +28,29 @@ public static class PoiCatalog
     ];
     public static readonly string[] Enabled = All.Where(x => x.Available).Select(x => x.Id).ToArray();
     public static readonly string[] Sections = All.Select(x => x.Section).Distinct().ToArray();
+    public static bool IsMechanic(Poi poi) => All.Any(x => x.Id == poi.FilterCategory && x.Section == "Mechanics");
+
+    public static string ShortName(Poi poi)
+    {
+        if (poi.Source == "entity" && poi.Kind == "rare") return "Rare";
+        if (poi.Source == "entity" && poi.Kind == "boss") return "Boss";
+        if (poi.Id.StartsWith("marker:boss:", StringComparison.Ordinal) || poi.FilterCategory == "map-boss"
+            || poi.FilterCategory == "arena") return "BO$$";
+        if (poi.Key.Contains("AbyssSubAreaTransition", StringComparison.OrdinalIgnoreCase)
+            || poi.Name.Contains("AbyssSubAreaTransition", StringComparison.OrdinalIgnoreCase)) return "Abyss";
+        return poi.FilterCategory switch
+        {
+            "ritual" => "Ritual", "abyss" => "Abyss", "expedition" => "Expedition",
+            "breach" => "Breach", "delirium" => "Delirium", "essence" => "Essence",
+            "shrine" => "Shrine", "strongbox" => "Strongbox", "azmeri" => "Azmeri",
+            "sekhemas" => "Sekhemas", "chaos" => "Chaos", "incursion" => "Incursion",
+            _ => poi.Name
+        };
+    }
+
+    public static bool KeepMapPoi(string areaCode, Poi poi) => !areaCode.StartsWith("Map", StringComparison.OrdinalIgnoreCase)
+        || poi.FilterCategory != "expedition"
+        || poi.Key.EndsWith("/Expedition2Encounter", StringComparison.OrdinalIgnoreCase);
 
     public static string Classify(Poi poi)
     {
@@ -58,7 +81,7 @@ public static class PoiCatalog
         ("ritual", ["metadata/terrain/leagues/ritual/", "metadata/terrain/gallows/leagues/ritual/", "metadata/miscellaneousobjects/ritual", "metadata/npc/league/ritual/"]),
         ("abyss", ["metadata/terrain/leagues/abyss/", "metadata/terrain/gallows/leagues/abyss/", "metadata/miscellaneousobjects/abyss/", "metadata/npc/league/abyss/"]),
         ("expedition", ["metadata/terrain/leagues/expedition/", "metadata/terrain/gallows/leagues/expedition/", "metadata/miscellaneousobjects/expedition/", "metadata/miscellaneousobjects/expedition2/", "metadata/npc/league/expedition/", "metadata/npc/four_endgame/expedition/"]),
-        ("breach", ["metadata/terrain/leagues/breach/", "metadata/terrain/gallows/leagues/breach/", "metadata/miscellaneousobjects/breach", "metadata/npc/league/breach/"]),
+        ("breach", ["metadata/terrain/leagues/breach/", "metadata/terrain/gallows/leagues/breach/", "metadata/miscellaneousobjects/breach", "metadata/miscellaneousobjects/brequel/brequelinitiator", "metadata/npc/league/breach/"]),
         ("delirium", ["metadata/terrain/leagues/delirium/", "metadata/terrain/gallows/leagues/delirium/", "metadata/miscellaneousobjects/delirium"]),
         ("essence", ["metadata/terrain/leagues/essence/", "metadata/miscellaneousobjects/essence", "metadata/chests/essence"]),
         ("strongbox", ["metadata/chests/strongboxes/", "metadata/chests/strongbox"]),

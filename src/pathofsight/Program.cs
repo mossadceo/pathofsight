@@ -118,7 +118,8 @@ public static class Program
     {
         var at=Array.IndexOf(args,"--render-demo");if(at+1>=args.Length)return 2;
         var path=System.IO.Path.GetFullPath(args[at+1]);var fixture=DemoFixture.Create();
-        var picture=TerrainPicture.Create(fixture.Terrain);var points=fixture.Landmarks.Concat(fixture.Objects).ToArray();
+        var picture=TerrainPicture.Create(fixture.Terrain);var points=fixture.Landmarks.Concat(fixture.Objects)
+            .Select(p=>p with {Name=PoiCatalog.ShortName(p)}).ToArray();
         var route=new POE2Radar.Core.Pathfinding.PathPlanner().Plan(fixture.Terrain,(40,90),(209,40)).Select(p=>new Point(p.x,p.y)).ToArray();
         var snapshot=new MapSnapshot("demo","",Environment.TickCount64,"demo","",fixture.Player,points,route,"tile:exit",Width:240,Height:160,Terrain:fixture.Terrain,Picture:picture);
         var scale=args.Contains("--dpi150")?1.5:1;

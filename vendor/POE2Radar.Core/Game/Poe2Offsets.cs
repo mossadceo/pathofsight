@@ -178,6 +178,12 @@ public static class Poe2
     public static class MinimapIcon
     {
         public const int CompletedState = 0x10; // ✓ int — 0 = active/shown, non-zero = completed/faded
+        public const int BrequelFinished = 0x38; // ✓ int — BrequelInitiator: 0 before/during Breach, 1 after closing (Lost Towers, 2026-09-27)
+    }
+
+    public static class ShrineComponent
+    {
+        public const int Used = 0x24; // ✓ int — 0 before taking the buff, 1 afterward (Canyon, 2026-09-27)
     }
 
     /// <summary>StateMachine component — drives stateful devices. Its listener vector at

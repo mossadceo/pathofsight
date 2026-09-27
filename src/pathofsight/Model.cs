@@ -75,7 +75,8 @@ public sealed class PoiTracker
         var moving = new List<Poi>();
         foreach (var p in observed)
             if (p.Source == "entity" && p.Kind is "boss" or "npc" or "magic" or "rare") moving.Add(p);
-            else _objects[p.Id] = p with { Remembered = false };
+            else _objects[p.Id] = p with { Remembered = false,
+                Completed = p.Completed || (_objects.TryGetValue(p.Id, out var old) && old.Completed) };
         var result = _objects.Values.Concat(moving).ToList();
         var used = new HashSet<string>();
         foreach (var tile in _landmarks)
@@ -97,7 +98,10 @@ public sealed class PoiTracker
                 result[at] = match with { Id = tile.Id, Key = tile.Key, Name = tile.Name, Filter = tile.Filter ?? tile.FilterCategory };
             }
         }
-        return result.OrderBy(p => p.Kind).ThenBy(p => p.Name).ToArray();
+        var finished = result.Where(p => p.Completed && PoiCatalog.IsMechanic(p)).ToArray();
+        return result.Where(p => !PoiCatalog.IsMechanic(p) || !finished.Any(done =>
+                done.FilterCategory == p.FilterCategory && done.Position.Distance(p.Position) <= 23))
+            .OrderBy(p => p.Kind).ThenBy(p => p.Name).ToArray();
     }
     public static string Kind(string path, string label, bool entity = false)
     {

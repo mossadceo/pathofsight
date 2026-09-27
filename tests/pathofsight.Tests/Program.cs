@@ -10,6 +10,27 @@ using POE2Radar.Core.Pathfinding;
 
 var checks=0;
 void Check(bool condition,string name){if(!condition)throw new Exception("FAIL: "+name);checks++;Console.WriteLine("PASS: "+name);}
+if(args.Contains("--live"))
+{
+    using var liveService=new MapService(System.IO.Path.Combine(System.IO.Path.GetTempPath(),"pathofsight-live-check"));
+    var deadline=Environment.TickCount64+15000;
+    while(liveService.Snapshot.Status is not ("ready" or "incompatible" or "error") && Environment.TickCount64<deadline)
+        await Task.Delay(250);
+    var liveSnapshot=liveService.Snapshot;
+    Console.WriteLine(JsonSerializer.Serialize(new{liveSnapshot.Status,liveSnapshot.Message,liveSnapshot.Area,
+        liveSnapshot.Width,liveSnapshot.Height,expedition=liveSnapshot.Targets.Count(p=>p.FilterCategory=="expedition"),
+        rare=liveSnapshot.Targets.Count(p=>p.Kind=="rare"),
+        breach=liveSnapshot.Targets.Where(p=>p.FilterCategory=="breach").Select(p=>new{p.Id,p.Key,p.Position,p.Name,p.Completed}),
+        ritual=liveSnapshot.Targets.Where(p=>p.FilterCategory=="ritual").Select(p=>new{p.Id,p.Completed}),
+        shrines=liveSnapshot.Targets.Where(p=>p.FilterCategory=="shrine").Select(p=>new{p.Id,p.Completed})}));
+    Check(liveSnapshot.Status=="ready"&&liveSnapshot.Terrain is not null&&liveSnapshot.Picture is not null,
+        "live map publishes validated terrain");
+    Check(liveSnapshot.Targets.Where(p=>p.FilterCategory=="expedition").All(p=>p.Name=="Expedition")
+        && liveSnapshot.Targets.Where(p=>p.Kind=="rare").All(p=>p.Name=="Rare")
+        && liveSnapshot.Targets.Where(p=>p.FilterCategory=="map-boss").All(p=>p.Name=="BO$$"),
+        "live POIs use short public labels");
+    return;
+}
 string[] EmbeddedArt(string name)
 {
     using var stream=typeof(pathofsight.Program).Assembly.GetManifestResourceStream("pathofsight.Art."+name+".txt")!;
@@ -92,6 +113,10 @@ foreach (var width in new[] { 40, 65, 80, 120 })
     Check(TuiView.ColorAt(eye,0)=="112;119;130",$"border color is independent of eye at width {width}");
 }
 var fixture=DemoFixture.Create();var tracker=new PoiTracker();tracker.Reset("a",fixture.Landmarks);
+Check(Poe2Live.IsPlausibleTerrainGrid(8_498_868,1_484)
+    && !Poe2Live.IsPlausibleTerrainGrid(18_000_000,2_000)
+    && !Poe2Live.IsPlausibleTerrainGrid(8_498_869,1_484),
+    "Azmerian Ranges terrain fits while oversized and incomplete grids are rejected");
 Check(tracker.Update(fixture.Objects).Length==9,"tile and entity layers combine, including Magic and Rare");
 var found=tracker.Update(fixture.Objects.Concat(fixture.Discovered));
 Check(found.Length==9&&found.Single(p=>p.Id=="tile:exit").Source=="entity","discovered transition replaces matching tile");
@@ -163,6 +188,14 @@ foreach(var (rarity,kind,color) in new[]{(Poe2Live.Rarity.Magic,"magic","#75A7FF
 Check(PoiTracker.FromEntity(boss with {Rarity=Poe2Live.Rarity.NonMonster})==null
     &&!Poe2Live.IsVisibleMonster((Poe2Live.Rarity)99,100,100,0),"unsupported rarity values are not monster targets");
 Check(PoiTracker.FromEntity(boss with { Reaction=1 })==null,"friendly unique is not marked as boss");
+var deadIds=new HashSet<uint>();
+var sleepingRare=boss with { Rarity=Poe2Live.Rarity.Rare, HpCur=0, HpMax=0 };
+var deadRare=sleepingRare with { HpMax=100 };
+Check(MapService.RadarEntities([deadRare],[sleepingRare],deadIds).Select(PoiTracker.FromEntity).All(p=>p is null)
+    && deadIds.Contains(sleepingRare.Id),"dead awake Rare suppresses a stale sleeping marker");
+Check(!MapService.RadarEntities([], [sleepingRare],deadIds).Any()
+    && MapService.RadarEntities([], [sleepingRare],new HashSet<uint>()).Any(),
+    "dead Rare remains hidden until the instance state resets");
 var bossRouteTargets=new Poi[]
 {
     new("tile:arena","MapExcavation:BossArena","Арена босса","boss",new(30,40),"tile"),
@@ -309,6 +342,64 @@ Check(File.Exists(legacyPath+".v1.bak")&&new SettingsStore(legacyPath).LoadWarni
 File.WriteAllText(System.IO.Path.Combine(dir,"invalid-profiles.json"),"{\"version\":2,\"profiles\":null}");
 Check(new SettingsStore(System.IO.Path.Combine(dir,"invalid-profiles.json")).LoadWarning!=null,"invalid profile structure falls back with warning");
 Poi FilterPoi(string path,string label="Object",string kind="poi",string source="tile")=>new("test",path,label,kind,new(1,1),source);
+var breachHand=PoiTracker.FromEntity(AbyssDot("Metadata/MiscellaneousObjects/Brequel/BrequelInitiator"))!;
+Check(breachHand.FilterCategory=="breach"&&PoiCatalog.ShortName(breachHand)=="Breach",
+    "Brequel initiator is a Breach mechanic with a short label");
+Check(!Poe2Live.IsCompletedIcon(breachHand.Key,0,0)
+    && Poe2Live.IsCompletedIcon(breachHand.Key,0,1)
+    && !Poe2Live.IsCompletedIcon("Metadata/MiscellaneousObjects/Expedition2/Expedition2Encounter",0,1)
+    && Poe2Live.IsCompletedIcon("Metadata/MiscellaneousObjects/Expedition2/Expedition2Encounter",1,0),
+    "Brequel completion flag is specific to the hand and standard icon completion still works");
+var ritualSite=new Poi("ritual:1","Metadata/Terrain/Leagues/Ritual/RitualRuneObject","Ritual","poi",new(10,10),"entity");
+var completedRitual=ritualSite with {Id="ritual:done",Key="Metadata/Terrain/Leagues/Ritual/RitualRuneInteractable",Completed=true};
+var otherRitual=ritualSite with {Id="ritual:other",Position=new(100,100)};
+var mechanicTracker=new PoiTracker();mechanicTracker.Reset("mechanics",[]);
+var ritualPoints=mechanicTracker.Update([ritualSite,completedRitual,otherRitual]);
+Check(ritualPoints.Length==1 && ritualPoints[0].Id==otherRitual.Id,
+    "completing one Ritual hides colocated Ritual POIs but not other sites");
+Check(mechanicTracker.Update([ritualSite,otherRitual]).Single().Id==otherRitual.Id,
+    "mechanic completion persists within the instance after the interactable vanishes");
+Check(mechanicTracker.Update([ritualSite,completedRitual with {Completed=false},otherRitual]).Single().Id==otherRitual.Id,
+    "a transient incomplete read does not restore a finished mechanic");
+mechanicTracker.Reset("next",[]);
+Check(mechanicTracker.Update([ritualSite]).Single().Completed==false,"mechanic completion resets in a new instance");
+mechanicTracker.Reset("breach",[]);
+var remainingBreach=breachHand with {Id="breach:other",Position=new(100,100)};
+var remainingRitual=ritualSite with {Position=breachHand.Position};
+Check(mechanicTracker.Update([breachHand with {Completed=true},remainingBreach,remainingRitual])
+    .Select(p=>p.Id).Order().SequenceEqual(new[]{remainingBreach.Id,remainingRitual.Id}.Order()),
+    "completed Breach hides only its hand, leaving another Breach and a different mechanic");
+var shrineDot=AbyssDot("Metadata/Shrines/Shrine");
+var shrinePoi=PoiTracker.FromEntity(shrineDot)!;
+var otherShrine=PoiTracker.FromEntity(shrineDot with {Id=91,Grid=new(100,100)})!;
+mechanicTracker.Reset("shrine",[]);
+Check(mechanicTracker.Update([shrinePoi,otherShrine]).Length==2
+    && mechanicTracker.Update([PoiTracker.FromEntity(shrineDot with {IconComplete=true})!,otherShrine])
+        .Single().Id==otherShrine.Id
+    && mechanicTracker.Update([shrinePoi,otherShrine]).Single().Id==otherShrine.Id,
+    "used Shrine disappears without hiding another Shrine and stays hidden in its instance");
+mechanicTracker.Reset("chest",[]);
+Check(mechanicTracker.Update([ritualSite with {Id="chest:1",Key="Metadata/Chests/Chest",Kind="chest",Completed=true}]).Length==1,
+    "completed non-mechanics keep their existing display behavior");
+foreach(var (mechanicPath,label) in new[]{
+    ("Metadata/MiscellaneousObjects/Abyss/AbyssJumpInteractable","Abyss"),
+    ("Metadata/Terrain/Leagues/Ritual/RitualRuneObject","Ritual"),
+    ("Metadata/MiscellaneousObjects/Expedition2/Expedition2Encounter","Expedition"),
+    ("Metadata/MiscellaneousObjects/Breach/BreachPortal","Breach")})
+    Check(PoiCatalog.ShortName(FilterPoi(mechanicPath,"Long internal name"))==label,label+" uses a short default label");
+var abyssTransition=FilterPoi("Metadata/MiscellaneousObjects/Abyss/AbyssSubAreaTransition","AbyssSubAreaTransition","transition");
+Check(PoiCatalog.ShortName(abyssTransition)=="Abyss"&&abyssTransition.FilterCategory=="transition",
+    "Abyss subarea keeps transition behavior with a short label");
+var shortBoss=FilterPoi("MapExcavation:boss-spawn","Место появления босса","boss") with { Id="marker:boss:7" };
+Check(PoiCatalog.ShortName(shortBoss)=="BO$$"&&PoiCatalog.ShortName(bossPoi!)=="Boss"
+    && PoiCatalog.ShortName(bossPoi! with {Kind="rare"})=="Rare",
+    "map boss and enemy names have generic defaults");
+Check(new DisplaySettings { Names = new() { [shortBoss.Key]="My Boss" } }.Label(shortBoss with { Name=PoiCatalog.ShortName(shortBoss) })=="My Boss",
+    "saved custom label overrides the short default");
+Check(PoiCatalog.KeepMapPoi("MapAzmerianRanges",FilterPoi("Metadata/MiscellaneousObjects/Expedition2/Expedition2Encounter"))
+    && !PoiCatalog.KeepMapPoi("MapAzmerianRanges",FilterPoi("Metadata/Terrain/Gallows/Leagues/Expedition/Objects/ExplodingFill_StrongBox"))
+    && PoiCatalog.KeepMapPoi("G1_1",FilterPoi("Metadata/Terrain/Gallows/Leagues/Expedition/Objects/ExplodingFill_StrongBox")),
+    "map Expedition keeps rune stations, drops filler, and preserves campaign POIs");
 Check(FilterPoi("Metadata/Terrain/Woods/HuntingGrounds/RitualClearing01","Ritual Site (Level 4 Skill Gem)","quest").FilterCategory=="reward","campaign ritual reward is not hidden as a mechanic");
 Check(FilterPoi("Metadata/Terrain/Desert/Badlands/Features/AbyssHole","Lightless Passage","transition").FilterCategory=="transition","campaign Abyss passage keeps transition category");
 Check(FilterPoi("Metadata/Terrain/Dungeon/DoryanisSanctum/Entrance","Jiquani's Sanctum","transition").FilterCategory=="transition","campaign sanctum is not a trial mechanic");

@@ -78,7 +78,7 @@ public sealed class MapSurface : FrameworkElement
             var radius = settings.IconSize;
             dc.DrawEllipse(p.Source=="entity"?brush:null,new Pen(brush,1.5),point,radius,radius);
             if (p.Id==s.Selected) dc.DrawEllipse(null,new Pen(brush,2),point,radius+5,radius+5);
-            if(settings.Labels)
+            if(settings.Labels && !(p.Source=="entity" && p.Kind is "rare" or "boss"))
             {
                 var label = new FormattedText(settings.Label(p),CultureInfo.CurrentCulture,FlowDirection.LeftToRight,new Typeface("Segoe UI"),12,brush,pixelsPerDip);
                 label.MaxTextWidth=280;
